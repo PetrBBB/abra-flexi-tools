@@ -7,8 +7,6 @@ import pandas as pd
 import pdfplumber
 import streamlit as st
 
-st.set_page_config(page_title="PDF výpis -> ABRA Flexi", page_icon="🏦", layout="wide")
-
 TYP_DOKLADU_DEFAULT = "STANDARD"
 MAX_POPIS = 255
 
@@ -686,61 +684,189 @@ def rows_to_csv_bytes(rows: List[Dict[str, str]]) -> bytes:
 
 
 def main():
-    st.title("PDF výpis → CSV pro ABRA Flexi")
-    st.caption("Webová aplikace pro převod PDF výpisu na CSV pro import banky do ABRA Flexi. Podporuje: ČSOB, Raiffeisenbank, Česká spořitelna.")
+    st.set_page_config(page_title="PDF výpis → ABRA Flexi", page_icon="🏦", layout="centered")
 
-    with st.sidebar:
-        st.subheader("Nastavení")
-        typ_dokladu = st.text_input("Typ dokladu", value=TYP_DOKLADU_DEFAULT)
-        bankovni_ucet = st.text_input("Bank.účet", value="BANKOVNÍ ÚČET")
-        st.markdown("---")
-        st.caption("v2.2 — přepsán parser Raiffeisenbank")
+    # ---- CSS ----
+    st.markdown("""
+    <style>
+    .header-box {
+        background: #ffffff;
+        border: 1px solid #e0e4ea;
+        border-radius: 12px;
+        padding: 1rem 1.5rem;
+        margin-bottom: 1.5rem;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+    }
+    .header-firma {
+        font-size: 17px;
+        font-weight: 600;
+        color: #1a3a5c;
+        margin: 0;
+    }
+    .header-firma-sub {
+        font-size: 12px;
+        color: #6b7a8d;
+        margin: 2px 0 0 0;
+    }
+    .header-app {
+        font-size: 14px;
+        font-weight: 500;
+        color: #1a3a5c;
+        text-align: right;
+        margin: 0;
+    }
+    .header-ver {
+        font-size: 11px;
+        color: #9aa3ad;
+        text-align: right;
+        margin: 2px 0 0 0;
+    }
+    .step-label {
+        font-size: 11px;
+        font-weight: 600;
+        color: #6b7a8d;
+        text-transform: uppercase;
+        letter-spacing: 0.07em;
+        margin-bottom: 6px;
+    }
+    .hint-box {
+        background: #fff8e6;
+        border: 1px solid #f0c040;
+        border-radius: 8px;
+        padding: 10px 14px;
+        font-size: 13px;
+        color: #7a5500;
+        margin-top: 10px;
+        line-height: 1.6;
+    }
+    .locked-box {
+        background: #f7f8fa;
+        border: 1px dashed #d0d5dd;
+        border-radius: 12px;
+        padding: 1.5rem;
+        text-align: center;
+        color: #9aa3ad;
+        font-size: 14px;
+    }
+    div[data-testid="stDownloadButton"] button {
+        background-color: #1a3a5c !important;
+        color: white !important;
+        border: none !important;
+        width: 100%;
+    }
+    div[data-testid="stDownloadButton"] button:hover {
+        background-color: #254d78 !important;
+    }
+    </style>
+    """, unsafe_allow_html=True)
 
-    uploaded_file = st.file_uploader("Nahraj PDF výpis", type=["pdf"])
-    if not uploaded_file:
-        st.info("Nahrajte PDF výpis banky pro zpracování.")
+    # ---- Header ----
+    st.markdown("""
+    <div class="header-box">
+        <div>
+            <p class="header-firma">Účetnictví BP s.r.o.</p>
+            <p class="header-firma-sub">Ing. Petr Bureš</p>
+        </div>
+        <div>
+            <p class="header-app">PDF výpis → ABRA Flexi</p>
+            <p class="header-ver">v2.3 · Česká spořitelna · ČSOB · Raiffeisenbank</p>
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    # ---- Krok 1: Bank. účet ----
+    st.markdown('<p class="step-label">Krok 1 — Bankovní účet ve Flexi</p>', unsafe_allow_html=True)
+
+    col_input, col_btn = st.columns([3, 1])
+    with col_input:
+        bankovni_ucet = st.text_input(
+            "Zkratka bankovního účtu",
+            value="",
+            placeholder="např. BANKOVNÍ ÚČET",
+            label_visibility="collapsed",
+        )
+    with col_btn:
+        krok1_ok = st.button("✓  Potvrdit", use_container_width=True, type="primary")
+
+    st.markdown("""
+    <div class="hint-box">
+        Zkratku najdete ve Flexi: <strong>Peníze → Bankovní účty → sloupec Zkratka</strong>.
+        Musí přesně odpovídat, jinak import selže.
+    </div>
+    """, unsafe_allow_html=True)
+
+    # Uložení potvrzené zkratky do session state
+    if krok1_ok:
+        if bankovni_ucet.strip():
+            st.session_state["bankovni_ucet_ok"] = bankovni_ucet.strip()
+        else:
+            st.warning("Zadejte zkratku bankovního účtu před potvrzením.")
+
+    ucet_potvrzen = st.session_state.get("bankovni_ucet_ok", "")
+
+    if ucet_potvrzen:
+        st.success(f"✓ Bankovní účet nastaven: **{ucet_potvrzen}**")
+    else:
+        st.markdown('<div class="locked-box">⬆ Nejprve potvrďte zkratku bankovního účtu</div>', unsafe_allow_html=True)
         st.stop()
 
+    st.markdown("<br>", unsafe_allow_html=True)
+
+    # ---- Krok 2: Nahrání PDF ----
+    st.markdown('<p class="step-label">Krok 2 — Nahrání PDF výpisu</p>', unsafe_allow_html=True)
+
+    typ_dokladu = TYP_DOKLADU_DEFAULT
+
+    uploaded_file = st.file_uploader(
+        "Přetáhněte PDF výpis nebo klikněte pro výběr",
+        type=["pdf"],
+        label_visibility="visible",
+    )
+
+    if not uploaded_file:
+        st.markdown('<div class="locked-box">⬆ Nahrajte PDF výpis pro pokračování</div>', unsafe_allow_html=True)
+        st.stop()
+
+    # ---- Zpracování ----
     pdf_bytes = uploaded_file.read()
     text = extract_text_from_pdf_bytes(pdf_bytes)
     banka = detect_bank(text)
     meta = extract_statement_meta(text, banka)
 
-    col1, col2, col3, col4 = st.columns(4)
-    col1.metric("Rozpoznaná banka", banka)
-    col2.metric("Rok", meta.get("rok") or "—")
-    col3.metric("Měsíc", meta.get("mesic") or "—")
-    col4.metric("Účet v PDF", meta.get("ucet_pdf") or "—")
-
     if banka == "Neznámá":
-        st.error("Tato verze podporuje ČSOB, Raiffeisenbank a Českou spořitelnu.")
+        st.error("Nepodporovaná banka. Tato verze podporuje Českou spořitelnu, ČSOB a Raiffeisenbank.")
         st.stop()
 
     if not meta.get("rok") or not meta.get("mesic"):
         st.error("Nepodařilo se zjistit rok nebo měsíc z PDF.")
         st.stop()
 
-    rows, skipped = parse_transactions(text, banka, meta, typ_dokladu, bankovni_ucet)
+    rows, skipped = parse_transactions(text, banka, meta, typ_dokladu, ucet_potvrzen)
 
     if not rows:
-        st.error("Nepodařilo se vytvořit žádné položky.")
+        st.error("Nepodařilo se zpracovat žádné položky. Zkontrolujte formát výpisu.")
         st.stop()
+
+    st.markdown("<br>", unsafe_allow_html=True)
+
+    # ---- Krok 3: Výsledek ----
+    st.markdown('<p class="step-label">Krok 3 — Výsledek a stažení</p>', unsafe_allow_html=True)
 
     df = pd.DataFrame(rows)
     prijmy = df.loc[df["Typ pohybu"] == "typPohybu.prijem", "Částka osvob. bez DPH [Kč]"].astype(float).sum()
     vydaje = df.loc[df["Typ pohybu"] == "typPohybu.vydej", "Částka osvob. bez DPH [Kč]"].astype(float).sum()
 
-    a, b, c, d = st.columns(4)
-    a.metric("Počet položek", len(df))
-    b.metric("Příjmy", f"{prijmy:,.2f}".replace(",", " "))
-    c.metric("Výdaje", f"{vydaje:,.2f}".replace(",", " "))
-    if skipped:
-        d.metric("⚠️ Přeskočeno", skipped)
+    col1, col2, col3, col4 = st.columns(4)
+    col1.metric("Banka", banka)
+    col2.metric("Položek", len(df))
+    col3.metric("Příjmy", f"{prijmy:,.2f}".replace(",", " "))
+    col4.metric("Výdaje", f"{vydaje:,.2f}".replace(",", " "))
 
     if skipped:
-        st.warning(f"{skipped} bloků se nepodařilo zpracovat. Zkontrolujte náhled, zda nechybí položky.")
+        st.warning(f"⚠️ {skipped} bloků se nepodařilo zpracovat. Zkontrolujte náhled.")
 
-    st.subheader("Náhled")
     st.dataframe(df, use_container_width=True, hide_index=True)
 
     bank_slug = (banka.lower()
@@ -751,22 +877,19 @@ def main():
     filename = f"flexi_banka_import_{bank_slug}_{meta['rok']}_{meta['mesic']}.csv"
 
     st.download_button(
-        "⬇️ Stáhnout CSV pro Flexi",
+        "⬇  Stáhnout CSV pro ABRA Flexi",
         csv_bytes,
         filename,
         "text/csv",
         use_container_width=True,
-        type="primary",
     )
 
-    with st.expander("Jak použít"):
+    with st.expander("Jak importovat do ABRA Flexi"):
         st.markdown("""
-1. Nahraj textové PDF výpisu.
-2. Zkontroluj pole **Typ dokladu** a **Bank.účet** v levém panelu.
-3. Zkontroluj náhled — počty příjmů/výdajů musí sedět s výpisem.
-4. Stáhni CSV.
-5. Ve WUI ABRA Flexi: **Nástroje → Import → Import z Excelu → Banka**
-6. Nejdřív použij **Vyzkoušet import**, pak teprve potvrď.
+1. Stáhni CSV soubor tlačítkem výše.
+2. Ve Flexi: **Nástroje → Import → Import z Excelu → Banka**
+3. Nejdřív klikni **Vyzkoušet import** — zkontroluj výsledek.
+4. Pokud je vše v pořádku, potvrď import.
         """)
 
 
