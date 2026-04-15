@@ -198,33 +198,33 @@ def parse_csob_block(block: List[str], poradi: int, rok: str, mesic: str, typ_do
 
 
 # ---------------- Raiffeisenbank parser ----------------
-def parse_rb_header(line: str):
-    m_amount = re.search(r'(-?\d[\d\s\xa0]*\.\d{2})\s*CZK$', line)
-    if not m_amount:
-        return None
-    castka = m_amount.group(1)
-    prefix = line[:m_amount.start()].strip()
-    m_date = re.match(r'^(\d{1,2}\.\s*\d{1,2}\.\s*\d{4})\s+(.*)$', prefix)
-    if not m_date:
-        return None
-    datum = m_date.group(1)
-    rest = m_date.group(2)
-    parts = rest.split(" ", 1)
-    if len(parts) < 2:
-        return None
-    kategorie = parts[0]
-    body = parts[1]
-    vs = ""
-    tokens = body.split()
-    if tokens and tokens[-1].isdigit():
-        vs = tokens[-1]
-        body = " ".join(tokens[:-1])
-    return {"datum": datum, "kategorie": kategorie, "typ": body.strip(), "castka": castka, "mena": "CZK", "vs": vs}
+# Nový formát RB výpisu (2025+):
+# Řádek 1: "2. 2. 2026"          ← datum zaúčtování
+# Řádek 2: "2. 2. 2026"          ← datum valuta
+# Řádek 3: "8553644068"           ← kód transakce
+# Řádek 4: "Platba"              ← kategorie
+# Řádek 5: "6006604339/0800"     ← protiúčet
+# Řádek 6: "Jednorázová úhrada"  ← typ transakce
+# Řádek 7: "VS:232026"           ← zpráva / VS
+# Řádek 8: "Bures 10-11/2025"   ← poznámka
+# Řádek 9: "232026 -3 086.00 CZK" ← VS + částka
+
+_RB_DATE_RE = re.compile(r"^\d{1,2}\.\s*\d{1,2}\.\s*\d{4}$")
+_RB_KOD_RE = re.compile(r"^\d{10}$")
+_RB_CASTKA_RE = re.compile(r"^(.*?)\s*(-?\d[\d\s\xa0]*\.\d{2})\s*CZK$")
 
 
 def split_rb_transaction_blocks(lines: List[str]) -> List[List[str]]:
+    """
+    Rozdělí řádky RB výpisu na bloky. Každý blok začíná datem zaúčtování.
+    Přeskočí hlavičku a patičku výpisu.
+    """
     relevant = []
     in_section = False
+    skip_header_lines = (
+        "Datum Kategorie transakce", "Valuta Číslo protiúčtu", "Kód transakce Název protiúčtu",
+        "Datum ", "Valuta ", "Kód transakce ",
+    )
     for raw in lines:
         line = normalize_spaces(raw)
         if not line:
@@ -236,79 +236,139 @@ def split_rb_transaction_blocks(lines: List[str]) -> List[List[str]]:
             continue
         if line.startswith("Zpráva pro klienta") or line.startswith("V rámci souhrnné položky"):
             break
-        if line.startswith("Datum ") or line.startswith("Valuta ") or line.startswith("Kód transakce "):
+        if any(line.startswith(p) for p in skip_header_lines):
             continue
         relevant.append(line)
+
     blocks = []
     current = []
-    for line in relevant:
-        if parse_rb_header(line):
+    i = 0
+    while i < len(relevant):
+        line = relevant[i]
+        # Nový blok začíná datem zaúčtování (a hned za ním je druhé datum valuta)
+        if _RB_DATE_RE.match(line):
             if current:
                 blocks.append(current)
             current = [line]
         else:
             if current:
                 current.append(line)
+        i += 1
     if current:
         blocks.append(current)
     return blocks
 
 
-def rb_date_to_iso(d: str) -> str:
-    m = re.match(r"^(\d{1,2})\.\s*(\d{1,2})\.\s*(\d{4})$", d)
-    if not m:
-        raise ValueError(d)
-    day, month, year = map(int, m.groups())
-    return f"{year:04d}-{month:02d}-{day:02d}"
-
-
 def parse_rb_block(block: List[str], poradi: int, rok: str, mesic: str, typ_dokladu: str, bankovni_ucet: str):
-    header = parse_rb_header(block[0])
-    if not header:
+    """
+    Parsuje blok RB transakce v novém formátu:
+    [0] datum zaúčtování  "2. 2. 2026"
+    [1] datum valuta      "2. 2. 2026"
+    [2] kód transakce     "8553644068"
+    [3] kategorie         "Platba" / "Poplatek"
+    [4] protiúčet         "6006604339/0800"  (může chybět)
+    [5] typ transakce     "Jednorázová úhrada"
+    [6] zpráva/VS         "VS:232026" nebo text
+    [7] poznámka          volitelné
+    [8] "VS částka CZK"   "232026 -3 086.00 CZK"
+    """
+    if not block:
         return None
-    datum = rb_date_to_iso(header["datum"])
-    castka = parse_amount_from_pdf(header["castka"])
-    typ_pohybu = "typPohybu.prijem" if castka > 0 else "typPohybu.vydej"
-    castka_abs = abs(castka)
-    mena = header["mena"]
-    kategorie = header["kategorie"]
-    typ = header["typ"]
-    vs = header.get("vs") or ""
-    valuta = ""
+
+    # Datum zaúčtování — první řádek
+    datum_str = normalize_spaces(block[0])
+    if not _RB_DATE_RE.match(datum_str):
+        return None
+    m_d = re.match(r"^(\d{1,2})\.\s*(\d{1,2})\.\s*(\d{4})$", datum_str)
+    if not m_d:
+        return None
+    datum = f"{int(m_d.group(3)):04d}-{int(m_d.group(2)):02d}-{int(m_d.group(1)):02d}"
+
+    # Projdeme zbytek bloku a hledáme klíčové položky
+    kategorie = ""
     ucet_proti = ""
-    ident = ""
     nazev_protiuctu = ""
-    detail_texts = []
+    typ_transakce = ""
+    vs = ""
     ks = ""
     ss = ""
-    if len(block) >= 2:
-        line2 = block[1]
-        m2 = re.match(r"^(?P<valuta>\d{1,2}\.\s*\d{1,2}\.\s*\d{4})\s*(?P<rest>.*)$", line2)
-        rest = line2
-        if m2:
-            valuta = m2.group("valuta")
-            rest = m2.group("rest").strip()
-        acct, found_vs, found_ks, found_ss = parse_account_and_symbols(rest)
-        if acct:
-            ucet_proti = acct
-        if found_vs and not vs:
-            vs = found_vs
-        if found_ks and not ks:
-            ks = found_ks
-        if found_ss and not ss:
-            ss = found_ss
-    if len(block) >= 3:
-        line3 = block[2]
-        m3 = re.match(r"^(?P<ident>\d{6,})\s*(?P<rest>.*)$", line3)
-        if m3:
-            ident = m3.group("ident")
-            rest = m3.group("rest").strip()
-            if rest:
-                if ucet_proti:
-                    nazev_protiuctu = rest
-                else:
-                    detail_texts.append(rest)
-    popis_parts = [kategorie, typ]
+    castka_str = ""
+    detail_texts = []
+
+    for line in block[1:]:
+        line = normalize_spaces(line)
+        if not line:
+            continue
+
+        # Kód transakce — přeskočíme
+        if _RB_KOD_RE.match(line):
+            continue
+
+        # Datum valuta — přeskočíme
+        if _RB_DATE_RE.match(line):
+            continue
+
+        # Řádek s částkou a CZK na konci
+        m_castka = _RB_CASTKA_RE.match(line)
+        if m_castka:
+            castka_str = m_castka.group(2)
+            prefix = m_castka.group(1).strip()
+            # Prefix může obsahovat VS
+            if prefix and not vs:
+                m_vs = re.match(r"^(\d+)$", prefix)
+                if m_vs:
+                    vs = m_vs.group(1)
+            continue
+
+        # Protiúčet ve formátu číslo/kód
+        m_ucet = re.match(r"^(\d{1,6}-\d{1,10}/\d{4}|\d{1,16}/\d{4})$", line)
+        if m_ucet and not ucet_proti:
+            ucet_proti = m_ucet.group(1)
+            continue
+
+        # VS ze zprávy "VS:123456"
+        m_vs_zprava = re.match(r"^VS:(\d+)$", line)
+        if m_vs_zprava and not vs:
+            vs = m_vs_zprava.group(1)
+            continue
+
+        # KS ze zprávy "KS:1178"
+        m_ks = re.match(r"^KS:(\d+)$", line)
+        if m_ks and not ks:
+            ks = m_ks.group(1)
+            continue
+
+        # Kategorie — první textový řádek (Platba, Poplatek...)
+        if not kategorie and re.match(r"^[A-Za-záčďéěíňóřšťúůýžÁČĎÉĚÍŇÓŘŠŤÚŮÝŽ][a-záčďéěíňóřšťúůýžA-ZÁČĎÉĚÍŇÓŘŠŤÚŮÝŽ\s]+$", line):
+            kategorie = line
+            continue
+
+        # Typ transakce — druhý textový řádek
+        if kategorie and not typ_transakce and re.match(r"^[A-Za-záčďéěíňóřšťúůýžÁČĎÉĚÍŇÓŘŠŤÚŮÝŽ]", line):
+            # Může to být název protiúčtu nebo typ transakce
+            if ucet_proti and not nazev_protiuctu:
+                nazev_protiuctu = line
+            elif not typ_transakce:
+                typ_transakce = line
+            continue
+
+        # Cokoliv dalšího jde do detailů
+        detail_texts.append(line)
+
+    if not castka_str:
+        return None
+
+    try:
+        castka = parse_amount_from_pdf(castka_str)
+    except ValueError:
+        return None
+
+    typ_pohybu = "typPohybu.prijem" if castka > 0 else "typPohybu.vydej"
+    castka_abs = abs(castka)
+
+    popis_parts = [kategorie or "Platba"]
+    if typ_transakce:
+        popis_parts.append(typ_transakce)
     if nazev_protiuctu:
         popis_parts.append(nazev_protiuctu)
     if ucet_proti:
@@ -319,14 +379,12 @@ def parse_rb_block(block: List[str], poradi: int, rok: str, mesic: str, typ_dokl
         popis_parts.append(f"KS {ks}")
     if ss:
         popis_parts.append(f"SS {ss}")
-    if ident:
-        popis_parts.append(f"ID {ident}")
-    if valuta:
-        popis_parts.append(f"Valuta {valuta}")
     for extra in detail_texts[:3]:
         if extra.strip():
             popis_parts.append(extra.strip())
+
     popis = truncate_text(" | ".join([p for p in popis_parts if p]), MAX_POPIS)
+
     return {
         "Interní číslo": f"RB-{int(rok):04d}-{int(mesic):02d}-{poradi:04d}",
         "Typ dokladu": typ_dokladu,
@@ -334,10 +392,13 @@ def parse_rb_block(block: List[str], poradi: int, rok: str, mesic: str, typ_dokl
         "Typ pohybu": typ_pohybu,
         "Vystaveno": datum,
         "Částka osvob. bez DPH [Kč]": f"{castka_abs:.2f}",
-        "Měna": mena,
+        "Měna": "CZK",
         "Variabilní symbol": vs,
         "Popis": popis,
     }
+
+
+
 
 
 # ---------------- Česká spořitelna parser ----------------
