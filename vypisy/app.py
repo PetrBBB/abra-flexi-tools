@@ -767,7 +767,7 @@ def main():
     <div class="header-box">
         <div>
             <p class="header-firma">Účetnictví BP s.r.o.</p>
-            <p class="header-firma-sub">Ing. Petr Bureš</p>
+            <p class="header-firma-sub">www.ucto-bures.cz</p>
         </div>
         <div>
             <p class="header-app">PDF výpis → ABRA Flexi</p>
