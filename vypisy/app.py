@@ -104,6 +104,7 @@ def split_csob_transaction_blocks(lines: List[str]) -> List[List[str]]:
         "Prosíme Vás o včasné překontrolování", "Pokud při zúčtování karetní transakce",
         "Vklad na tomto účtu podléhá ochraně", "Víte, že si u nás můžete půjčit",
         "Stačí říci a půjčku Vám vyřídíme", "Uvedené předschválené limity",
+        "Československá obchodní banka", "zapsaná v obchodním rejstříku",
     ]
 
     for line in lines:
@@ -782,7 +783,7 @@ def main():
         </div>
         <div>
             <p class="header-app">PDF výpis → ABRA Flexi</p>
-            <p class="header-ver">v2.4 · Česká spořitelna · ČSOB · Raiffeisenbank</p>
+            <p class="header-ver">v2.5 · Česká spořitelna · ČSOB · Raiffeisenbank</p>
         </div>
     </div>
     """, unsafe_allow_html=True)
