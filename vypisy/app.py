@@ -719,7 +719,7 @@ def main():
         typ_dokladu = st.text_input("Typ dokladu", value=TYP_DOKLADU_DEFAULT)
         bankovni_ucet = st.text_input("Bank.účet", value="BANKOVNÍ ÚČET")
         st.markdown("---")
-        st.caption("v2.0 — opraveny poplatky ČSAS")
+        st.caption("v2.1 — opraven parser Raiffeisenbank")
 
     uploaded_file = st.file_uploader("Nahraj PDF výpis", type=["pdf"])
     if not uploaded_file:
