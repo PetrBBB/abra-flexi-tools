@@ -792,7 +792,7 @@ def main():
     st.markdown("""
     <div class="hint-box">
         ⚠️ <strong>Ověřte zkratku před pokračováním!</strong> Ve Flexi: <strong>Banka → Nový filtr → Bank.účet</strong><br>
-        V poli filtra uvidíte např. <strong>BANKOVNÍ ÚČET</strong>: 7748901003/5500 — opište část <strong>před dvojtečkou</strong>.<br>
+        V poli filtru uvidíte např. <strong>BANKOVNÍ ÚČET</strong>: 7748901003/5500 — opište část <strong>před dvojtečkou</strong>.<br>
         Pokud máte více účtů, zkratka se může lišit. Musí přesně odpovídat, jinak import selže.
     </div>
     """, unsafe_allow_html=True)
