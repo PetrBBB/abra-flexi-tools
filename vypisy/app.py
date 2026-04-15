@@ -783,8 +783,7 @@ def main():
     with col_input:
         bankovni_ucet = st.text_input(
             "Zkratka bankovního účtu",
-            value="",
-            placeholder="např. BANKOVNÍ ÚČET",
+            value="BANKOVNÍ ÚČET",
             label_visibility="collapsed",
         )
     with col_btn:
@@ -792,8 +791,9 @@ def main():
 
     st.markdown("""
     <div class="hint-box">
-        Zkratku najdete ve Flexi: <strong>Peníze → Bankovní účty → sloupec Zkratka</strong>.
-        Musí přesně odpovídat, jinak import selže.
+        ⚠️ <strong>Ověřte zkratku před pokračováním!</strong> Ve Flexi: <strong>Banka → Nový filtr → Bank.účet</strong><br>
+        V poli filtra uvidíte např. <strong>BANKOVNÍ ÚČET</strong>: 7748901003/5500 — opište část <strong>před dvojtečkou</strong>.<br>
+        Pokud máte více účtů, zkratka se může lišit. Musí přesně odpovídat, jinak import selže.
     </div>
     """, unsafe_allow_html=True)
 
