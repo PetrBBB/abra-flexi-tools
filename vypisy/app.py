@@ -20,6 +20,14 @@ def parse_amount_from_pdf(s: str) -> float:
     return float(s)
 
 
+def account_id(meta: Dict[str, str]) -> str:
+    """Vrátí krátké ID účtu z meta pro použití v interním čísle."""
+    ucet = meta.get("ucet_pdf", "")
+    # Vezmeme jen číselnou část před lomítkem, max 10 znaků
+    cislo = ucet.split("/")[0].replace("-", "").strip()
+    return cislo[:10] if cislo else "UCET"
+
+
 def truncate_text(s: str, max_len: int) -> str:
     s = s.strip()
     if len(s) <= max_len:
@@ -162,7 +170,7 @@ def clean_detail_line(line: str) -> str:
     return normalize_spaces(line).replace(";", ",")
 
 
-def parse_csob_block(block: List[str], poradi: int, rok: str, mesic: str, typ_dokladu: str, bankovni_ucet: str):
+def parse_csob_block(block: List[str], poradi: int, rok: str, mesic: str, typ_dokladu: str, bankovni_ucet: str, ucet_id: str = "UCET"):
     first = parse_csob_first_line(block[0])
     if not first:
         return None
@@ -195,7 +203,7 @@ def parse_csob_block(block: List[str], poradi: int, rok: str, mesic: str, typ_do
         popis_parts.append(extra)
     popis = truncate_text(" | ".join(popis_parts), MAX_POPIS)
     return {
-        "Interní číslo": f"CSOB-{int(rok):04d}-{int(mesic):02d}-{poradi:04d}",
+        "Interní číslo": f"CSOB-{ucet_id}-{int(rok):04d}-{int(mesic):02d}-{poradi:04d}",
         "Typ dokladu": typ_dokladu,
         "Bank.účet": bankovni_ucet,
         "Typ pohybu": typ_pohybu,
@@ -259,7 +267,7 @@ def split_rb_transaction_blocks(lines: List[str]) -> List[List[str]]:
     return blocks
 
 
-def parse_rb_block(block: List[str], poradi: int, rok: str, mesic: str, typ_dokladu: str, bankovni_ucet: str):
+def parse_rb_block(block: List[str], poradi: int, rok: str, mesic: str, typ_dokladu: str, bankovni_ucet: str, ucet_id: str = "UCET"):
     """
     Parsuje blok RB transakce:
     [0] "2. 2. 2026 Platba Jednorázová úhrada 232026 -3 086.00 CZK"
@@ -371,7 +379,7 @@ def parse_rb_block(block: List[str], poradi: int, rok: str, mesic: str, typ_dokl
     popis = truncate_text(" | ".join([p for p in popis_parts if p]), MAX_POPIS)
 
     return {
-        "Interní číslo": f"RB-{int(rok):04d}-{int(mesic):02d}-{poradi:04d}",
+        "Interní číslo": f"RB-{ucet_id}-{int(rok):04d}-{int(mesic):02d}-{poradi:04d}",
         "Typ dokladu": typ_dokladu,
         "Bank.účet": bankovni_ucet,
         "Typ pohybu": typ_pohybu,
@@ -442,7 +450,7 @@ def split_fio_transaction_blocks(lines: List[str]) -> List[List[str]]:
     return blocks
 
 
-def parse_fio_block(block: List[str], poradi: int, rok: str, mesic: str, typ_dokladu: str, bankovni_ucet: str):
+def parse_fio_block(block: List[str], poradi: int, rok: str, mesic: str, typ_dokladu: str, bankovni_ucet: str, ucet_id: str = "UCET"):
     if not block:
         return None
     m = _FIO_HLAVNI_RE.match(normalize_spaces(block[0]))
@@ -512,7 +520,7 @@ def parse_fio_block(block: List[str], poradi: int, rok: str, mesic: str, typ_dok
     popis = truncate_text(" | ".join([p for p in popis_parts if p]), MAX_POPIS)
 
     return {
-        "Interní číslo": f"FIO-{int(rok):04d}-{int(mesic):02d}-{poradi:04d}",
+        "Interní číslo": f"FIO-{ucet_id}-{int(rok):04d}-{int(mesic):02d}-{poradi:04d}",
         "Typ dokladu": typ_dokladu,
         "Bank.účet": bankovni_ucet,
         "Typ pohybu": typ_pohybu,
@@ -726,7 +734,7 @@ def is_pure_date_line(line: str) -> bool:
     return bool(re.match(r"^\d{2}\.\d{2}\.\d{4}$", normalize_spaces(line)))
 
 
-def parse_csas_block(block: List[str], poradi: int, rok: str, mesic: str, typ_dokladu: str, bankovni_ucet: str):
+def parse_csas_block(block: List[str], poradi: int, rok: str, mesic: str, typ_dokladu: str, bankovni_ucet: str, ucet_id: str = "UCET"):
     first = parse_csas_start_line(block[0])
     if not first:
         return None
@@ -785,7 +793,7 @@ def parse_csas_block(block: List[str], poradi: int, rok: str, mesic: str, typ_do
             popis_parts.append(extra)
     popis = truncate_text(" | ".join([p for p in popis_parts if p]), MAX_POPIS)
     return {
-        "Interní číslo": f"CSAS-{int(rok):04d}-{int(mesic):02d}-{poradi:04d}",
+        "Interní číslo": f"CSAS-{ucet_id}-{int(rok):04d}-{int(mesic):02d}-{poradi:04d}",
         "Typ dokladu": typ_dokladu,
         "Bank.účet": bankovni_ucet,
         "Typ pohybu": typ_pohybu,
@@ -801,10 +809,13 @@ def parse_transactions(text: str, banka: str, meta: Dict[str, str], typ_dokladu:
     lines = text.splitlines()
     rows = []
     skipped = 0
+    # Odvozujeme ucet_id z čísla účtu v PDF pro unikátní interní čísla
+    ucet_raw = meta.get("ucet_pdf", "")
+    ucet_id = ucet_raw.split("/")[0].replace("-", "").strip()[:10] or "UCET"
     if banka == "ČSOB":
         blocks = split_csob_transaction_blocks(lines)
         for i, block in enumerate(blocks, start=1):
-            row = parse_csob_block(block, i, meta["rok"], meta["mesic"], typ_dokladu, bankovni_ucet)
+            row = parse_csob_block(block, i, meta["rok"], meta["mesic"], typ_dokladu, bankovni_ucet, ucet_id)
             if row:
                 rows.append(row)
             else:
@@ -812,7 +823,7 @@ def parse_transactions(text: str, banka: str, meta: Dict[str, str], typ_dokladu:
     elif banka == "Raiffeisenbank":
         blocks = split_rb_transaction_blocks(lines)
         for i, block in enumerate(blocks, start=1):
-            row = parse_rb_block(block, i, meta["rok"], meta["mesic"], typ_dokladu, bankovni_ucet)
+            row = parse_rb_block(block, i, meta["rok"], meta["mesic"], typ_dokladu, bankovni_ucet, ucet_id)
             if row:
                 rows.append(row)
             else:
@@ -820,7 +831,7 @@ def parse_transactions(text: str, banka: str, meta: Dict[str, str], typ_dokladu:
     elif banka == "Fio banka":
         blocks = split_fio_transaction_blocks(lines)
         for i, block in enumerate(blocks, start=1):
-            row = parse_fio_block(block, i, meta["rok"], meta["mesic"], typ_dokladu, bankovni_ucet)
+            row = parse_fio_block(block, i, meta["rok"], meta["mesic"], typ_dokladu, bankovni_ucet, ucet_id)
             if row:
                 rows.append(row)
             else:
@@ -829,7 +840,7 @@ def parse_transactions(text: str, banka: str, meta: Dict[str, str], typ_dokladu:
     elif banka == "Česká spořitelna":
         blocks = split_csas_transaction_blocks(lines)
         for i, block in enumerate(blocks, start=1):
-            row = parse_csas_block(block, i, meta["rok"], meta["mesic"], typ_dokladu, bankovni_ucet)
+            row = parse_csas_block(block, i, meta["rok"], meta["mesic"], typ_dokladu, bankovni_ucet, ucet_id)
             if row:
                 rows.append(row)
             else:
@@ -940,7 +951,7 @@ def main():
         </div>
         <div>
             <p class="header-app">PDF výpis → ABRA Flexi</p>
-            <p class="header-ver">v2.6 · Česká spořitelna · ČSOB · Raiffeisenbank · Fio</p>
+            <p class="header-ver">v2.7 · Česká spořitelna · ČSOB · Raiffeisenbank · Fio</p>
         </div>
     </div>
     """, unsafe_allow_html=True)
