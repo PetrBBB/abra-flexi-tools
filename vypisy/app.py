@@ -203,7 +203,7 @@ def parse_csob_block(block: List[str], poradi: int, rok: str, mesic: str, typ_do
         popis_parts.append(extra)
     popis = truncate_text(" | ".join(popis_parts), MAX_POPIS)
     return {
-        "Interní číslo": f"CSOB-{ucet_id}-{int(rok):04d}-{int(mesic):02d}-{poradi:04d}",
+        "Interní číslo": f"CB-{ucet_id[-6:]}-{int(rok)%100:02d}-{int(mesic):02d}-{poradi:03d}",
         "Typ dokladu": typ_dokladu,
         "Bank.účet": bankovni_ucet,
         "Typ pohybu": typ_pohybu,
@@ -379,7 +379,7 @@ def parse_rb_block(block: List[str], poradi: int, rok: str, mesic: str, typ_dokl
     popis = truncate_text(" | ".join([p for p in popis_parts if p]), MAX_POPIS)
 
     return {
-        "Interní číslo": f"RB-{ucet_id}-{int(rok):04d}-{int(mesic):02d}-{poradi:04d}",
+        "Interní číslo": f"RB-{ucet_id[-6:]}-{int(rok)%100:02d}-{int(mesic):02d}-{poradi:03d}",
         "Typ dokladu": typ_dokladu,
         "Bank.účet": bankovni_ucet,
         "Typ pohybu": typ_pohybu,
@@ -520,7 +520,7 @@ def parse_fio_block(block: List[str], poradi: int, rok: str, mesic: str, typ_dok
     popis = truncate_text(" | ".join([p for p in popis_parts if p]), MAX_POPIS)
 
     return {
-        "Interní číslo": f"FIO-{ucet_id}-{int(rok):04d}-{int(mesic):02d}-{poradi:04d}",
+        "Interní číslo": f"FI-{ucet_id[-6:]}-{int(rok)%100:02d}-{int(mesic):02d}-{poradi:03d}",
         "Typ dokladu": typ_dokladu,
         "Bank.účet": bankovni_ucet,
         "Typ pohybu": typ_pohybu,
@@ -793,7 +793,7 @@ def parse_csas_block(block: List[str], poradi: int, rok: str, mesic: str, typ_do
             popis_parts.append(extra)
     popis = truncate_text(" | ".join([p for p in popis_parts if p]), MAX_POPIS)
     return {
-        "Interní číslo": f"CSAS-{ucet_id}-{int(rok):04d}-{int(mesic):02d}-{poradi:04d}",
+        "Interní číslo": f"CS-{ucet_id[-6:]}-{int(rok)%100:02d}-{int(mesic):02d}-{poradi:03d}",
         "Typ dokladu": typ_dokladu,
         "Bank.účet": bankovni_ucet,
         "Typ pohybu": typ_pohybu,
@@ -951,7 +951,7 @@ def main():
         </div>
         <div>
             <p class="header-app">PDF výpis → ABRA Flexi</p>
-            <p class="header-ver">v2.7 · Česká spořitelna · ČSOB · Raiffeisenbank · Fio</p>
+            <p class="header-ver">v2.8 · Česká spořitelna · ČSOB · Raiffeisenbank · Fio</p>
         </div>
     </div>
     """, unsafe_allow_html=True)
