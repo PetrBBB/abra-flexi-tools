@@ -376,7 +376,14 @@ def parse_rb_block(block: List[str], poradi: int, rok: str, mesic: str, typ_dokl
 
 # ---------------- Česká spořitelna parser ----------------
 def is_csas_start_line(line: str) -> bool:
-    return bool(re.match(r"^\d{2}\.\d{2}\.\d{4}\s+", normalize_spaces(line)))
+    """Hlavní řádek ČSAS transakce — musí začínat datem A obsahovat částku na konci.
+    Výjimka: 'Ceny za služby' začíná nový blok i bez částky."""
+    line = normalize_spaces(line)
+    if not re.match(r"^\d{2}\.\d{2}\.\d{4}\s+", line):
+        return False
+    if re.match(r"^\d{2}\.\d{2}\.\d{4}\s+Ceny za služby", line):
+        return True
+    return bool(re.search(r'[+-]\d[\d\s]*\.\d{2}$', line))
 
 
 # Regex pro řádek poplatku uvnitř bloku "Ceny za služby":
@@ -422,6 +429,7 @@ def split_csas_transaction_blocks(lines: List[str]) -> List[List[str]]:
         "Výpis z účtu", "Podnikatelský účet", "Firemní účet", "Číslo účtu/kód banky:",
         "Česká spořitelna, a.s.", "Pokračování na další straně", "strana ",
         "SBVY", "SBVPXML_", "M|EL|",
+        "zapsaná v obchodním", "zapsána v obchodním",
     )
     stop_prefixes = ("Konečný zůstatek:", "SHRNUTÍ POHYBŮ NA ÚČTU", "Typ Odepsáno z účtu")
 
@@ -493,10 +501,13 @@ def _expand_csas_poplatky(block: List[str]) -> List[List[str]]:
 
         parsed = parse_csas_poplatek_line(line)
         if parsed:
-            # Poplatek je celý na jednom řádku
+            # Poplatek je celý na jednom řádku (závorka s datem může být na dalším)
             synth = f"{datum} {parsed['nazev']} {parsed['castka']}"
             result.append([synth])
             i += 1
+            # Přeskočíme případný následující řádek se závorkou "(DD.MM.YYYY - DD.MM.YYYY)"
+            if i < len(block) and re.match(r"^\(", normalize_spaces(block[i])):
+                i += 1
         elif line.lower().startswith("cena za"):
             # Název poplatku je na tomto řádku, částka může být na dalším
             nazev = line
@@ -771,7 +782,7 @@ def main():
         </div>
         <div>
             <p class="header-app">PDF výpis → ABRA Flexi</p>
-            <p class="header-ver">v2.3 · Česká spořitelna · ČSOB · Raiffeisenbank</p>
+            <p class="header-ver">v2.4 · Česká spořitelna · ČSOB · Raiffeisenbank</p>
         </div>
     </div>
     """, unsafe_allow_html=True)
