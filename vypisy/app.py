@@ -146,7 +146,7 @@ def split_csob_transaction_blocks(lines: List[str]) -> List[List[str]]:
 
 def parse_csob_first_line(line: str) -> Optional[Dict[str, str]]:
     m = re.match(
-        r"^(?P<datum>\d{2}\.\d{2}\.)\s+(?P<popis1>.+?)\s+(?P<ident>\d{4,6})\s+"
+        r"^(?P<datum>\d{2}\.\d{2}\.)\s+(?P<popis1>.+?)\s+(?P<ident>\d{2,6})\s+"
         r"(?P<castka>-?\d{1,3}(?: \d{3})*,\d{2})\s+(?P<zustatek>-?\d{1,3}(?: \d{3})*,\d{2})$",
         line,
     )
@@ -594,7 +594,7 @@ def split_csas_transaction_blocks(lines: List[str]) -> List[List[str]]:
         line = normalize_spaces(raw)
         if not line:
             continue
-        if "PŘEHLED POHYBŮ NA ÚČTU" in line:
+        if "PŘEHLED POHYBŮ NA ÚČTU" in line or "Přehled pohybů na účtu od" in line:
             in_section = True
             continue
         if not in_section:
@@ -951,7 +951,7 @@ def main():
         </div>
         <div>
             <p class="header-app">PDF výpis → ABRA Flexi</p>
-            <p class="header-ver">v2.8 · Česká spořitelna · ČSOB · Raiffeisenbank · Fio</p>
+            <p class="header-ver">v2.9 · Česká spořitelna · ČSOB · Raiffeisenbank · Fio</p>
         </div>
     </div>
     """, unsafe_allow_html=True)
