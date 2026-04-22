@@ -132,6 +132,8 @@ def split_csob_transaction_blocks(lines: List[str]) -> List[List[str]]:
             continue
         if any(x in line for x in skip_contains):
             continue
+        if is_csob_junk_line(line):
+            continue
         if tx_start.match(line):
             if current:
                 blocks.append(current)
@@ -166,8 +168,23 @@ def parse_account_and_symbols(line: str):
     return ucet, vs, ks, ss
 
 
+# Fráze které se mohou vyskytnout v detailech ČSOB ale nejsou součástí transakce
+_CSOB_SKIP_PHRASES = (
+    "Vážená klientko", "vážený kliente", "Vážený kliente", "zasíláme Vám výpis",
+    "informací o zůstatku", "Zkontrolujte si prosím", "Prosíme Vás o včasné",
+    "Pokud při zúčtování karetní", "Vklad na tomto účtu podléhá",
+    "o systému pojištění", "Víte, že si u nás", "Stačí říci a půjčku",
+    "Uvedené předschválené", "předschválené limity",
+)
+
+
 def clean_detail_line(line: str) -> str:
     return normalize_spaces(line).replace(";", ",")
+
+
+def is_csob_junk_line(line: str) -> bool:
+    """Vrátí True pokud řádek obsahuje marketingový nebo systémový text ČSOB."""
+    return any(phrase in line for phrase in _CSOB_SKIP_PHRASES)
 
 
 def parse_csob_block(block: List[str], poradi: int, rok: str, mesic: str, typ_dokladu: str, bankovni_ucet: str, ucet_id: str = "UCET"):
@@ -180,7 +197,8 @@ def parse_csob_block(block: List[str], poradi: int, rok: str, mesic: str, typ_do
     typ_pohybu = "typPohybu.prijem" if castka > 0 else "typPohybu.vydej"
     castka_abs = abs(castka)
     ident = first["ident"]
-    lines = [clean_detail_line(x) for x in block[1:] if clean_detail_line(x)]
+    lines = [clean_detail_line(x) for x in block[1:]
+             if clean_detail_line(x) and not is_csob_junk_line(x)]
     ucet_proti = ""
     vs = ""
     detail_texts = []
@@ -951,7 +969,7 @@ def main():
         </div>
         <div>
             <p class="header-app">PDF výpis → ABRA Flexi</p>
-            <p class="header-ver">v2.9 · Česká spořitelna · ČSOB · Raiffeisenbank · Fio</p>
+            <p class="header-ver">v3.0 · Česká spořitelna · ČSOB · Raiffeisenbank · Fio</p>
         </div>
     </div>
     """, unsafe_allow_html=True)
