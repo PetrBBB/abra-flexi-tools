@@ -94,9 +94,10 @@ def extract_statement_meta(text: str, banka: str) -> Dict[str, str]:
             meta["ucet_pdf"] = m.group(1).strip()
 
     elif banka == "Česká spořitelna":
-        m = re.search(r"Období:\s*(\d{2})\.(\d{2})\.(\d{4})\s*-\s*(\d{2})\.(\d{2})\.(\d{4})", text)
+        # Podporuje formáty "01.01.2026" i "1.1.2026"
+        m = re.search(r"Období:\s*(\d{1,2})\.(\d{1,2})\.(\d{4})\s*-\s*(\d{1,2})\.(\d{1,2})\.(\d{4})", text)
         if m:
-            meta["mesic"] = m.group(2)
+            meta["mesic"] = f"{int(m.group(2)):02d}"
             meta["rok"] = m.group(3)
         m = re.search(r"Číslo účtu/kód banky:\s*([^\n]+?)\s+Číslo výpisu:", text)
         if m:
@@ -606,7 +607,7 @@ def split_csas_transaction_blocks(lines: List[str]) -> List[List[str]]:
         "SBVY", "SBVPXML_", "M|EL|",
         "zapsaná v obchodním", "zapsána v obchodním",
     )
-    stop_prefixes = ("Konečný zůstatek:", "SHRNUTÍ POHYBŮ NA ÚČTU", "Typ Odepsáno z účtu")
+    stop_prefixes = ("Konečný zůstatek:", "KONEČNÝ ZŮSTATEK:", "SHRNUTÍ POHYBŮ NA ÚČTU", "Typ Odepsáno z účtu", "PŘEHLED POHLEDÁVEK")
 
     for raw in lines:
         line = normalize_spaces(raw)
@@ -969,7 +970,7 @@ def main():
         </div>
         <div>
             <p class="header-app">PDF výpis → ABRA Flexi</p>
-            <p class="header-ver">v3.0 · Česká spořitelna · ČSOB · Raiffeisenbank · Fio</p>
+            <p class="header-ver">v3.1 · Česká spořitelna · ČSOB · Raiffeisenbank · Fio</p>
         </div>
     </div>
     """, unsafe_allow_html=True)
