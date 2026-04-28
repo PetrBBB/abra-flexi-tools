@@ -256,6 +256,12 @@ def split_rb_transaction_blocks(lines: List[str]) -> List[List[str]]:
     skip_prefixes = (
         "Datum Kategorie transakce", "Valuta Číslo protiúčtu", "Kód transakce Název protiúčtu",
     )
+    skip_contains_rb = (
+        "Raiffeisenbank a.s.,", "zapsaná v obchodním rejstříku",
+        "Výpis z běžného účtu č.", "Pořadové č. výpisu:",
+        "K0000810 v", "sp. zn. B 2051",
+    )
+    skip_exact_rb = re.compile(r"^Strana \d+/\d+$")
     for raw in lines:
         line = normalize_spaces(raw)
         if not line:
@@ -268,6 +274,10 @@ def split_rb_transaction_blocks(lines: List[str]) -> List[List[str]]:
         if line.startswith("Zpráva pro klienta") or line.startswith("V rámci souhrnné položky"):
             break
         if any(line.startswith(p) for p in skip_prefixes):
+            continue
+        if any(x in line for x in skip_contains_rb):
+            continue
+        if skip_exact_rb.match(line):
             continue
         relevant.append(line)
 
@@ -347,6 +357,17 @@ def parse_rb_block(block: List[str], poradi: int, rok: str, mesic: str, typ_dokl
     ucet_proti = ""
     nazev_protiuctu = ""
     detail_texts = []
+
+    # Filtr junk řádků z zápatí stránek RB
+    _rb_junk = re.compile(
+        r"^(?:\d{2}:\d{2}:\d{2}|\d{4}\.\d{2}\.\d{2}|K\d{7}\s+v\d|\d{8,}\s+•|[0-9A-Za-z]{6,10}K$|[0-9]+\.\d+v$)"
+    )
+    block = [block[0]] + [
+        l for l in block[1:]
+        if not _rb_junk.match(normalize_spaces(l))
+        and not any(x in normalize_spaces(l) for x in ("K0000810", "sp. zn. B 2051", "Raiffeisenbank a.s.", "•"))
+        and not re.match(r"^[\d\s]+$", normalize_spaces(l))
+    ]
 
     if len(block) >= 2:
         radek2 = normalize_spaces(block[1])
@@ -970,7 +991,7 @@ def main():
         </div>
         <div>
             <p class="header-app">PDF výpis → ABRA Flexi</p>
-            <p class="header-ver">v3.1 · Česká spořitelna · ČSOB · Raiffeisenbank · Fio</p>
+            <p class="header-ver">v3.2 · Česká spořitelna · ČSOB · Raiffeisenbank · Fio</p>
         </div>
     </div>
     """, unsafe_allow_html=True)
