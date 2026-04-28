@@ -176,6 +176,9 @@ _CSOB_SKIP_PHRASES = (
     "Pokud při zúčtování karetní", "Vklad na tomto účtu podléhá",
     "o systému pojištění", "Víte, že si u nás", "Stačí říci a půjčku",
     "Uvedené předschválené", "předschválené limity",
+    "zůstatek na účtu za Vámi", "Nesouhlasíte-li", "bez zbytečného odkladu",
+    "Pokud tak neučiníte", "Děkujeme", "odsouhlasený",
+    "kontaktujte nás", "považovat zůstatek",
 )
 
 
@@ -991,7 +994,7 @@ def main():
         </div>
         <div>
             <p class="header-app">PDF výpis → ABRA Flexi</p>
-            <p class="header-ver">v3.2 · Česká spořitelna · ČSOB · Raiffeisenbank · Fio</p>
+            <p class="header-ver">v3.3 · Česká spořitelna · ČSOB · Raiffeisenbank · Fio</p>
         </div>
     </div>
     """, unsafe_allow_html=True)
