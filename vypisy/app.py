@@ -994,7 +994,7 @@ def main():
         </div>
         <div>
             <p class="header-app">PDF výpis → ABRA Flexi</p>
-            <p class="header-ver">v3.3 · Česká spořitelna · ČSOB · Raiffeisenbank · Fio</p>
+            <p class="header-ver">v3.4 · Česká spořitelna · ČSOB · Raiffeisenbank · Fio</p>
         </div>
     </div>
     """, unsafe_allow_html=True)
@@ -1081,11 +1081,28 @@ def main():
     prijmy = df.loc[df["Typ pohybu"] == "typPohybu.prijem", "Částka osvob. bez DPH [Kč]"].astype(float).sum()
     vydaje = df.loc[df["Typ pohybu"] == "typPohybu.vydej", "Částka osvob. bez DPH [Kč]"].astype(float).sum()
 
-    col1, col2, col3, col4 = st.columns(4)
-    col1.metric("Banka", banka)
-    col2.metric("Položek", len(df))
-    col3.metric("Příjmy", f"{prijmy:,.2f}".replace(",", " "))
-    col4.metric("Výdaje", f"{vydaje:,.2f}".replace(",", " "))
+    prijmy_fmt = f"{prijmy:,.2f}".replace(",", " ")
+    vydaje_fmt = f"{vydaje:,.2f}".replace(",", " ")
+    st.markdown(f"""
+    <div style="display:grid; grid-template-columns: repeat(4,1fr); gap:10px; margin-bottom:1rem;">
+        <div style="background:#f7f8fa; border-radius:8px; padding:0.75rem 1rem;">
+            <div style="font-size:12px; color:#6b7a8d; margin-bottom:4px;">Banka</div>
+            <div style="font-size:15px; font-weight:600; color:#1a3a5c;">{banka}</div>
+        </div>
+        <div style="background:#f7f8fa; border-radius:8px; padding:0.75rem 1rem;">
+            <div style="font-size:12px; color:#6b7a8d; margin-bottom:4px;">Položek</div>
+            <div style="font-size:22px; font-weight:600; color:#1a3a5c;">{len(df)}</div>
+        </div>
+        <div style="background:#f0f7f0; border-radius:8px; padding:0.75rem 1rem;">
+            <div style="font-size:12px; color:#6b7a8d; margin-bottom:4px;">Příjmy [Kč]</div>
+            <div style="font-size:15px; font-weight:600; color:#1a6e35; word-break:break-all;">{prijmy_fmt}</div>
+        </div>
+        <div style="background:#fff4f4; border-radius:8px; padding:0.75rem 1rem;">
+            <div style="font-size:12px; color:#6b7a8d; margin-bottom:4px;">Výdaje [Kč]</div>
+            <div style="font-size:15px; font-weight:600; color:#a01e1e; word-break:break-all;">{vydaje_fmt}</div>
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
 
     if skipped:
         st.warning(f"⚠️ {skipped} bloků se nepodařilo zpracovat. Zkontrolujte náhled.")
