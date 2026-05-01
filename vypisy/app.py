@@ -87,16 +87,27 @@ def extract_statement_meta(text: str, banka: str) -> Dict[str, str]:
             meta["nazev_uctu"] = m.group(1).strip()
 
     elif banka == "Moneta":
+        # Běžný výpis: "Výpis ze dne: 31.12.2025"
         m = re.search(r"Výpis ze dne:\s*(\d{1,2})\.(\d{1,2})\.(\d{4})", text)
         if m:
             meta["mesic"] = f"{int(m.group(2)):02d}"
             meta["rok"] = m.group(3)
+        # Kreditní karta: "Výpis za období: 01.12.2025-31.12.2025" nebo "Výpis ke dni: 31.12.2025"
+        if not meta.get("rok"):
+            m = re.search(r"Výpis ke dni:\s*(\d{1,2})\.(\d{1,2})\.(\d{4})", text)
+            if m:
+                meta["mesic"] = f"{int(m.group(2)):02d}"
+                meta["rok"] = m.group(3)
+        # Účet z běžného výpisu
         m = re.search(r"Bankovní spojení:\s*(\d[\d-]*\s*/\s*\d{4})", text)
         if m:
             meta["ucet_pdf"] = m.group(1).strip()
-        m = re.search(r"^(.+?)\n", text)
-        if m:
-            meta["nazev_uctu"] = ""
+        # Účet z kreditní karty
+        if not meta.get("ucet_pdf"):
+            m = re.search(r"Na účet číslo\s*(\d+/\d+)", text)
+            if m:
+                meta["ucet_pdf"] = m.group(1).strip()
+        meta["nazev_uctu"] = ""
 
     elif banka == "Fio banka":
         m = re.search(r"Výpis za období\s*(\d{1,2})\.(\d{1,2})\.(\d{4})-(\d{1,2})\.(\d{1,2})\.(\d{4})", text)
@@ -652,6 +663,24 @@ _MONETA_SKIP = (
 )
 
 
+# Regex pro transakci na kreditní kartě Monety:
+# "DD.MM.YYYY popis [- ]částka,xx"
+_MONETA_CC_RE = re.compile(
+    r"^(?P<datum>\d{2}\.\d{2}\.\d{4})\s+"
+    r"(?P<popis>.+?)\s+"
+    r"(?P<castka>-?\s*\d{1,3}(?:\s\d{3})*,\d{2})$"
+)
+
+_MONETA_CC_SKIP = (
+    "TICHÝ", "MARTIN", "karta číslo", "OSTATNÍ ÚHRADY",
+)
+
+
+def _je_moneta_cc_radek(line: str) -> bool:
+    """Vrátí True pokud jde o transakci kreditní karty."""
+    return bool(_MONETA_CC_RE.match(line))
+
+
 def split_moneta_transaction_blocks(lines: List[str]) -> List[List[str]]:
     relevant = []
     in_section = False
@@ -666,14 +695,19 @@ def split_moneta_transaction_blocks(lines: List[str]) -> List[List[str]]:
             continue
         if any(line.startswith(p) for p in _MONETA_SKIP):
             continue
-        if any(x in line for x in ("Zapsáno u MS", "odd. B, vl.", "zákaznický servis")):
+        if any(x in line for x in ("Zapsáno u MS", "odd. B, vl.", "zákaznický servis",
+                                    "Výpis ke kreditní", "karta číslo", "OSTATNÍ ÚHRADY",
+                                    "Datum Popis transakce", "zaúčtování / Bankovní",
+                                    "valuta Cizí", "výpis pokračuje")):
+            continue
+        if re.match(r"^TICHÝ .+ - karta", line):
             continue
         relevant.append(line)
 
     blocks = []
     current = []
     for line in relevant:
-        if _moneta_parse_hlavni(line) is not None:
+        if _moneta_parse_hlavni(line) is not None or _MONETA_CC_RE.match(line):
             if current:
                 blocks.append(current)
             current = [line]
@@ -688,7 +722,19 @@ def split_moneta_transaction_blocks(lines: List[str]) -> List[List[str]]:
 def parse_moneta_block(block: List[str], poradi: int, rok: str, mesic: str, typ_dokladu: str, bankovni_ucet: str, ucet_id: str = "UCET"):
     if not block:
         return None
-    parsed = _moneta_parse_hlavni(normalize_spaces(block[0]))
+    line0 = normalize_spaces(block[0])
+    parsed = _moneta_parse_hlavni(line0)
+    # Zkusíme CC formát pokud hlavní selže
+    if not parsed:
+        m_cc = _MONETA_CC_RE.match(line0)
+        if m_cc:
+            parsed = {
+                "datum": m_cc.group("datum"),
+                "ucet": "",
+                "popis": m_cc.group("popis"),
+                "vs": "",
+                "castka": m_cc.group("castka"),
+            }
     if not parsed:
         return None
 
@@ -1198,7 +1244,7 @@ def main():
         </div>
         <div>
             <p class="header-app">PDF výpis → ABRA Flexi</p>
-            <p class="header-ver">v3.6 · ČS · ČSOB · RB · Fio · Moneta</p>
+            <p class="header-ver">v3.7 · ČS · ČSOB · RB · Fio · Moneta</p>
         </div>
     </div>
     """, unsafe_allow_html=True)
