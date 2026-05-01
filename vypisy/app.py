@@ -596,21 +596,47 @@ def parse_fio_block(block: List[str], poradi: int, rok: str, mesic: str, typ_dok
 # Řádek 3: "valuta"
 # Řádek 4+: "KI: ...", "AV: ..." (volitelné)
 
-# Hlavní regex — datum + [protiúčet] + kód + kód_transakce + [VS] + částka
-_MONETA_HLAVNI_RE = re.compile(
-    r"^(?P<datum>\d{2}\.\d{2}\.\d{4})\s+"
-    r"(?:(?P<ucet>\d{1,6}-\d{1,10}/\d{4}|\d{1,16}/\d{4})\s+)?"
-    r"(?P<kod>.+?)\s+"
-    r"(?P<kod_trans>[A-Z0-9]{10,})\s+"
-    r"(?:(?P<vs>\d{5,})\s+)?"
-    r"(?P<castka>-?\s*\d[\d\s]*,\d{2})$"
-)
-# Fallback pro transakce bez kódu: "DD.MM.YYYY popis částka"
-_MONETA_FALLBACK_RE = re.compile(
-    r"^(?P<datum>\d{2}\.\d{2}\.\d{4})\s+"
-    r"(?P<kod>.+?)\s+"
-    r"(?P<castka>-?\s*\d[\d\s]*,\d{2})$"
-)
+# Moneta: regex pro datum a pro částku (parsujeme token po tokenu)
+_MONETA_DATUM_RE = re.compile(r"^(\d{2}\.\d{2}\.\d{4})\s+(.*)")
+_MONETA_CASTKA_RE = re.compile(r"(?<!\d)(-?\s*\d{1,3}(?:\s\d{3})*,\d{2})$")
+_MONETA_UCET_RE = re.compile(r"^(\d{1,6}-\d{1,10}/\d{4}|\d{1,16}/\d{4})\s+(.*)")
+_MONETA_KOD_TRANS_RE = re.compile(r"^[A-Z0-9]{15,}$")  # kód transakce: 15+ alfanum
+
+
+def _moneta_parse_hlavni(line: str):
+    """Parsuje první řádek Moneta transakce. Vrátí dict nebo None."""
+    m_d = _MONETA_DATUM_RE.match(line)
+    if not m_d:
+        return None
+    datum = m_d.group(1)
+    rest = m_d.group(2).strip()
+
+    m_c = _MONETA_CASTKA_RE.search(rest)
+    if not m_c:
+        return None
+    castka_str = m_c.group(1).strip()
+    rest = rest[:m_c.start()].strip()
+
+    ucet = ""
+    m_u = _MONETA_UCET_RE.match(rest)
+    if m_u:
+        ucet = m_u.group(1)
+        rest = m_u.group(2).strip()
+
+    tokens = rest.split()
+    vs = ""
+    kod_found = False
+    popis_tokens = []
+    for tok in tokens:
+        if _MONETA_KOD_TRANS_RE.match(tok) and re.search(r"[A-Z]", tok) and not kod_found:
+            kod_found = True
+        elif kod_found and re.match(r"^\d{4,12}$", tok) and not vs:
+            vs = tok
+        elif not kod_found:
+            popis_tokens.append(tok)
+
+    popis = " ".join(popis_tokens)
+    return {"datum": datum, "ucet": ucet, "popis": popis, "vs": vs, "castka": castka_str}
 
 _MONETA_SKIP = (
     "Výpis z běžného účtu", "Číslo výpisu:", "Výpis ze dne:", "Předchozí výpis",
@@ -647,7 +673,7 @@ def split_moneta_transaction_blocks(lines: List[str]) -> List[List[str]]:
     blocks = []
     current = []
     for line in relevant:
-        if _MONETA_HLAVNI_RE.match(line) or _MONETA_FALLBACK_RE.match(line):
+        if _moneta_parse_hlavni(line) is not None:
             if current:
                 blocks.append(current)
             current = [line]
@@ -662,16 +688,14 @@ def split_moneta_transaction_blocks(lines: List[str]) -> List[List[str]]:
 def parse_moneta_block(block: List[str], poradi: int, rok: str, mesic: str, typ_dokladu: str, bankovni_ucet: str, ucet_id: str = "UCET"):
     if not block:
         return None
-    m = _MONETA_HLAVNI_RE.match(normalize_spaces(block[0]))
-    if not m:
-        m = _MONETA_FALLBACK_RE.match(normalize_spaces(block[0]))
-    if not m:
+    parsed = _moneta_parse_hlavni(normalize_spaces(block[0]))
+    if not parsed:
         return None
 
-    datum_str = m.group("datum")
+    datum_str = parsed["datum"]
     datum = f"{datum_str[6:10]}-{datum_str[3:5]}-{datum_str[0:2]}"
 
-    castka_str = m.group("castka").replace(" ", "").replace(",", ".")
+    castka_str = parsed["castka"].replace(" ", "").replace(",", ".")
     try:
         castka = float(castka_str)
     except ValueError:
@@ -680,9 +704,9 @@ def parse_moneta_block(block: List[str], poradi: int, rok: str, mesic: str, typ_
     typ_pohybu = "typPohybu.prijem" if castka > 0 else "typPohybu.vydej"
     castka_abs = abs(castka)
 
-    ucet_proti = m.group("ucet") if "ucet" in m.groupdict() else ""
-    vs = m.group("vs") if "vs" in m.groupdict() and m.group("vs") else ""
-    popis_typ = ""
+    ucet_proti = parsed["ucet"]
+    vs = parsed["vs"]
+    popis_typ = parsed["popis"]
     ks = ""
     detail_texts = []
 
@@ -1174,7 +1198,7 @@ def main():
         </div>
         <div>
             <p class="header-app">PDF výpis → ABRA Flexi</p>
-            <p class="header-ver">v3.5 · ČS · ČSOB · RB · Fio · Moneta</p>
+            <p class="header-ver">v3.6 · ČS · ČSOB · RB · Fio · Moneta</p>
         </div>
     </div>
     """, unsafe_allow_html=True)
