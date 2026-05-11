@@ -355,6 +355,17 @@ def parse_rb_block(block: List[str], poradi: int, rok: str, mesic: str, typ_dokl
     except ValueError:
         return None
 
+    # Detekce poplatku — záporné číslo těsně před CZK částkou (zahraniční platby)
+    m_poplatek = re.search(r"(-\d[\d.]+)\s*$", zbytek)
+    if m_poplatek:
+        try:
+            poplatek = float(m_poplatek.group(1))
+            if poplatek < 0:
+                castka += poplatek  # přičteme záporný poplatek k výdaji
+            zbytek = zbytek[:m_poplatek.start()].strip()
+        except ValueError:
+            pass
+
     typ_pohybu = "typPohybu.prijem" if castka > 0 else "typPohybu.vydej"
     castka_abs = abs(castka)
 
@@ -1244,7 +1255,7 @@ def main():
         </div>
         <div>
             <p class="header-app">PDF výpis → ABRA Flexi</p>
-            <p class="header-ver">v3.7 · ČS · ČSOB · RB · Fio · Moneta</p>
+            <p class="header-ver">v3.8 · ČS · ČSOB · RB · Fio · Moneta</p>
         </div>
     </div>
     """, unsafe_allow_html=True)
