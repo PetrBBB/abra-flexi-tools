@@ -98,6 +98,10 @@ def extract_statement_meta(text: str, banka: str) -> Dict[str, str]:
             if m:
                 meta["mesic"] = f"{int(m.group(2)):02d}"
                 meta["rok"] = m.group(3)
+        # Číslo výpisu — např. "2025/13" → použijeme jako součást ID
+        m = re.search(r"Číslo výpisu:\s*(\d{4})/(\d{1,2})", text)
+        if m:
+            meta["cislo_vypisu"] = f"{int(m.group(2)):02d}"
         # Účet z běžného výpisu
         m = re.search(r"Bankovní spojení:\s*(\d[\d-]*\s*/\s*\d{4})", text)
         if m:
@@ -1125,8 +1129,10 @@ def parse_transactions(text: str, banka: str, meta: Dict[str, str], typ_dokladu:
                 skipped += 1
     elif banka == "Moneta":
         blocks = split_moneta_transaction_blocks(lines)
+        # Pro Monetu použijeme číslo výpisu místo měsíce (mohou být 2 výpisy ve stejném měsíci)
+        moneta_mesic = meta.get("cislo_vypisu") or meta["mesic"]
         for i, block in enumerate(blocks, start=1):
-            row = parse_moneta_block(block, i, meta["rok"], meta["mesic"], typ_dokladu, bankovni_ucet, ucet_id)
+            row = parse_moneta_block(block, i, meta["rok"], moneta_mesic, typ_dokladu, bankovni_ucet, ucet_id)
             if row:
                 rows.append(row)
             else:
@@ -1255,7 +1261,7 @@ def main():
         </div>
         <div>
             <p class="header-app">PDF výpis → ABRA Flexi</p>
-            <p class="header-ver">v3.8 · ČS · ČSOB · RB · Fio · Moneta</p>
+            <p class="header-ver">v3.9 · ČS · ČSOB · RB · Fio · Moneta</p>
         </div>
     </div>
     """, unsafe_allow_html=True)
