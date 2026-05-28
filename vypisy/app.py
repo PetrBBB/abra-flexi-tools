@@ -52,6 +52,8 @@ def detect_bank(text: str) -> str:
         return "Raiffeisenbank"
     if "FIO BANKA" in upper or "FIOBCZPP" in upper:
         return "Fio banka"
+    if "AIR BANK" in upper or "AIRACZPP" in upper:
+        return "Air Bank"
     if "MONETA" in upper or "AGBACZPP" in upper:
         return "Moneta"
     if "ČESKÁ SPOŘITELNA" in upper or "CESKA SPORITELNA" in upper:
@@ -85,6 +87,18 @@ def extract_statement_meta(text: str, banka: str) -> Dict[str, str]:
         m = re.search(r"Název účtu:\s*([^\n]+)", text)
         if m:
             meta["nazev_uctu"] = m.group(1).strip()
+
+    elif banka == "Air Bank":
+        m = re.search(r"Období výpisu:\s*(\d{1,2})\.\s*(\d{1,2})\.\s*(\d{4})\s*-\s*(\d{1,2})\.\s*(\d{1,2})\.\s*(\d{4})", text)
+        if m:
+            meta["mesic"] = f"{int(m.group(5)):02d}"
+            meta["rok"] = m.group(6)
+        m = re.search(r"Číslo účtu:\s*(\d[\d-]*\s*/\s*\d{4})", text)
+        if m:
+            meta["ucet_pdf"] = m.group(1).strip()
+        m = re.search(r"Číslo výpisu:\s*(\d+)", text)
+        if m:
+            meta["cislo_vypisu"] = f"{int(m.group(1)):02d}"
 
     elif banka == "Moneta":
         # Běžný výpis: "Výpis ze dne: 31.12.2025"
@@ -615,6 +629,173 @@ def parse_fio_block(block: List[str], poradi: int, rok: str, mesic: str, typ_dok
     }
 
 
+
+# ---------------- Air Bank parser ----------------
+# Formát každé transakce (2 řádky):
+# Řádek 1: "DD.MM.YYYY Typ [Název/VS] částka,xx 0,00"
+# Řádek 2: "DD.MM.YYYY kód_transakce [protiúčet] [detaily]"
+# Řádek 3+: volitelné detaily (zpráva, AV:, ...)
+
+_AB_HLAVNI_RE = re.compile(
+    r"^(?P<datum>\d{2}\.\d{2}\.\d{4})\s+"
+    r"(?P<typ>[A-Za-záčďéěíňóřšťúůýžÁČĎÉĚÍŇÓŘŠŤÚŮÝŽ][\w\s]+?)\s+"
+    r"(?P<zbytek>.+?)\s+"
+    r"(?P<castka>-?\d{1,3}(?:\s\d{3})*,\d{2})\s+"
+    r"0,00$"
+)
+
+_AB_SKIP = (
+    "Zaúčtování Typ", "Provedení Kód transakce", "Pokračování na straně",
+    "Air Bank a.s.", "Společnost zapsaná", "Vklad na tomto účtu",
+    "o systému pojištění", "Informační přehled", "I banku můžete mít",
+    "www.airbank.cz",
+)
+_AB_SKIP_RE = re.compile(r"^\d{4}/\d{2}/\d{2}$|^\d/\d$|^\d+/\d+$")
+
+
+def split_airbank_transaction_blocks(lines: List[str]) -> List[List[str]]:
+    relevant = []
+    in_section = False
+    for raw in lines:
+        line = normalize_spaces(raw)
+        if not line:
+            continue
+        if line.startswith("Zaúčtování Typ"):
+            in_section = True
+            continue
+        if not in_section:
+            continue
+        if any(line.startswith(p) for p in _AB_SKIP):
+            continue
+        if _AB_SKIP_RE.match(line):
+            continue
+        relevant.append(line)
+
+    blocks = []
+    current = []
+    for line in relevant:
+        if _AB_HLAVNI_RE.match(line):
+            if current:
+                blocks.append(current)
+            current = [line]
+        else:
+            if current:
+                current.append(line)
+    if current:
+        blocks.append(current)
+    return blocks
+
+
+def parse_airbank_block(block: List[str], poradi: int, rok: str, mesic: str, typ_dokladu: str, bankovni_ucet: str, ucet_id: str = "UCET"):
+    if not block:
+        return None
+    m = _AB_HLAVNI_RE.match(normalize_spaces(block[0]))
+    if not m:
+        return None
+
+    datum_str = m.group("datum")
+    datum = f"{datum_str[6:10]}-{datum_str[3:5]}-{datum_str[0:2]}"
+
+    castka_str = m.group("castka").replace(" ", "").replace(",", ".")
+    try:
+        castka = float(castka_str)
+    except ValueError:
+        return None
+
+    typ_pohybu = "typPohybu.prijem" if castka > 0 else "typPohybu.vydej"
+    castka_abs = abs(castka)
+    typ = normalize_spaces(m.group("typ"))
+    zbytek = normalize_spaces(m.group("zbytek"))
+    typ = normalize_spaces(m.group("typ"))
+
+    # Pokud typ je jednoslovný a zbytek začíná malým písmenem, přidáme první slovo zbytku k typu
+    # "Příchozí" + "úhrada ..." → "Příchozí úhrada"
+    zbytek_slova = zbytek.split()
+    if (len(typ.split()) == 1 and zbytek_slova
+            and zbytek_slova[0][0].islower()):
+        typ = typ + " " + zbytek_slova[0]
+        zbytek = " ".join(zbytek_slova[1:]).strip()
+
+    # Ze zbytku prvního řádku vytáhneme VS a název
+    vs = ""
+    ks = ""
+    ss = ""
+    nazev = ""
+
+    m_vs = re.search(r"VS(\d+)", zbytek)
+    if m_vs:
+        vs = m_vs.group(1)
+    m_ks = re.search(r"KS(\d+)", zbytek)
+    if m_ks:
+        ks = m_ks.group(1)
+    m_ss = re.search(r"SS(\d+)", zbytek)
+    if m_ss:
+        ss = m_ss.group(1)
+
+    # Zbytek bez VS/KS/SS je název protiúčtu
+    nazev = re.sub(r"VS\d+\s*/?|KS\d+\s*/?|SS\d+\s*/?", "", zbytek).strip(" /")
+    nazev = normalize_spaces(nazev)
+
+    # Druhý řádek: kód_transakce, protiúčet, detaily
+    ucet_proti = ""
+    detail_texts = []
+
+    if len(block) >= 2:
+        radek2 = normalize_spaces(block[1])
+        # Odstraníme datum z začátku
+        radek2 = re.sub(r"^\d{2}\.\d{2}\.\d{4}\s+", "", radek2).strip()
+        # Odstraníme kód transakce (12 číslic)
+        radek2 = re.sub(r"^\d{12}\s*", "", radek2).strip()
+        # Protiúčet
+        m_ucet = re.match(r"^(\d{1,6}-\d{1,10}\s*/\s*\d{4}|\d{1,16}\s*/\s*\d{4}|\d{6}-\d{10}\s*/\s*\d{4})", radek2)
+        if m_ucet:
+            ucet_proti = m_ucet.group(1).replace(" ", "")
+            radek2 = radek2[m_ucet.end():].strip()
+        # Zbytek jsou detaily
+        if radek2:
+            # Hledáme VS/KS/SS pokud ještě nemáme
+            if not vs:
+                mv = re.search(r"VS(\d+)", radek2)
+                if mv:
+                    vs = mv.group(1)
+            detail_texts.append(re.sub(r"VS\d+\s*/?|KS\d+\s*/?|SS\d+\s*/?", "", radek2).strip(" /"))
+
+    # Další řádky jako detaily
+    for line in block[2:]:
+        line = normalize_spaces(line)
+        if line and not line.startswith("Pokračování") and "Air Bank" not in line:
+            detail_texts.append(line)
+
+    popis_parts = [typ]
+    if nazev:
+        popis_parts.append(nazev)
+    if ucet_proti:
+        popis_parts.append(f"Protiúčet {ucet_proti}")
+    if vs:
+        popis_parts.append(f"VS {vs}")
+    if ks:
+        popis_parts.append(f"KS {ks}")
+    if ss:
+        popis_parts.append(f"SS {ss}")
+    for extra in detail_texts[:2]:
+        if extra and extra.strip():
+            popis_parts.append(extra.strip())
+
+    popis = truncate_text(" | ".join([p for p in popis_parts if p]), MAX_POPIS)
+
+    # Číslo výpisu pro unikátní ID — použijeme mesic (který může být cislo_vypisu)
+    return {
+        "Interní číslo": f"AB-{ucet_id[-6:]}-{int(rok)%100:02d}-{int(mesic):02d}-{poradi:03d}",
+        "Typ dokladu": typ_dokladu,
+        "Bank.účet": bankovni_ucet,
+        "Typ pohybu": typ_pohybu,
+        "Vystaveno": datum,
+        "Částka osvob. bez DPH [Kč]": f"{castka_abs:.2f}",
+        "Měna": "CZK",
+        "Variabilní symbol": vs,
+        "Popis": popis,
+    }
+
 # ---------------- Moneta Money Bank parser ----------------
 # Formát každé transakce (3+ řádky):
 # Řádek 1: "DD.MM.YYYY [protiúčet] kód_transakce [VS] [- ]částka,00"
@@ -1127,6 +1308,16 @@ def parse_transactions(text: str, banka: str, meta: Dict[str, str], typ_dokladu:
                 rows.append(row)
             else:
                 skipped += 1
+    elif banka == "Air Bank":
+        blocks = split_airbank_transaction_blocks(lines)
+        ab_mesic = meta.get("cislo_vypisu") or meta["mesic"]
+        for i, block in enumerate(blocks, start=1):
+            row = parse_airbank_block(block, i, meta["rok"], ab_mesic, typ_dokladu, bankovni_ucet, ucet_id)
+            if row:
+                rows.append(row)
+            else:
+                skipped += 1
+
     elif banka == "Moneta":
         blocks = split_moneta_transaction_blocks(lines)
         # Pro Monetu použijeme číslo výpisu místo měsíce (mohou být 2 výpisy ve stejném měsíci)
@@ -1261,7 +1452,7 @@ def main():
         </div>
         <div>
             <p class="header-app">PDF výpis → ABRA Flexi</p>
-            <p class="header-ver">v3.9 · ČS · ČSOB · RB · Fio · Moneta</p>
+            <p class="header-ver">v4.0 · ČS · ČSOB · RB · Fio · Moneta · Air Bank</p>
         </div>
     </div>
     """, unsafe_allow_html=True)
@@ -1326,7 +1517,7 @@ def main():
     meta = extract_statement_meta(text, banka)
 
     if banka == "Neznámá":
-        st.error("Nepodporovaná banka. Tato verze podporuje Českou spořitelnu, ČSOB, Raiffeisenbank, Fio banku a Moneta Money Bank.")
+        st.error("Nepodporovaná banka. Tato verze podporuje ČS, ČSOB, Raiffeisenbank, Fio, Moneta a Air Bank.")
         st.stop()
 
     if not meta.get("rok") or not meta.get("mesic"):
