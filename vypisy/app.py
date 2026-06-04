@@ -317,8 +317,10 @@ def split_rb_transaction_blocks(lines: List[str]) -> List[List[str]]:
             continue
         if not in_section:
             continue
-        if line.startswith("Zpráva pro klienta") or line.startswith("V rámci souhrnné položky"):
+        if line.startswith("Zpráva pro klienta"):
             break
+        if line.startswith("V rámci souhrnné položky"):
+            continue  # přeskočíme detail poplatků, ale pokračujeme dál
         if any(line.startswith(p) for p in skip_prefixes):
             continue
         if any(x in line for x in skip_contains_rb):
@@ -1452,7 +1454,7 @@ def main():
         </div>
         <div>
             <p class="header-app">PDF výpis → ABRA Flexi</p>
-            <p class="header-ver">v4.0 · ČS · ČSOB · RB · Fio · Moneta · Air Bank</p>
+            <p class="header-ver">v4.1 · ČS · ČSOB · RB · Fio · Moneta · Air Bank</p>
         </div>
     </div>
     """, unsafe_allow_html=True)
