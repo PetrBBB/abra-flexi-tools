@@ -135,6 +135,11 @@ def extract_statement_meta(text: str, banka: str) -> Dict[str, str]:
         m = re.search(r"Číslo účtu:\s*([^\s]+)", text)
         if m:
             meta["ucet_pdf"] = m.group(1).strip()
+        m = re.search(r"Měna účtu\s+(\w+)", text)
+        if m:
+            meta["mena"] = m.group(1).strip()
+        else:
+            meta["mena"] = "CZK"
 
     elif banka == "Česká spořitelna":
         # Podporuje formáty "01.01.2026" i "1.1.2026"
@@ -549,7 +554,7 @@ def split_fio_transaction_blocks(lines: List[str]) -> List[List[str]]:
     return blocks
 
 
-def parse_fio_block(block: List[str], poradi: int, rok: str, mesic: str, typ_dokladu: str, bankovni_ucet: str, ucet_id: str = "UCET"):
+def parse_fio_block(block: List[str], poradi: int, rok: str, mesic: str, typ_dokladu: str, bankovni_ucet: str, ucet_id: str = "UCET", mena: str = "CZK"):
     if not block:
         return None
     m = _FIO_HLAVNI_RE.match(normalize_spaces(block[0]))
@@ -625,7 +630,7 @@ def parse_fio_block(block: List[str], poradi: int, rok: str, mesic: str, typ_dok
         "Typ pohybu": typ_pohybu,
         "Vystaveno": datum,
         "Částka osvob. bez DPH [Kč]": f"{castka_abs:.2f}",
-        "Měna": "CZK",
+        "Měna": mena,
         "Variabilní symbol": vs,
         "Popis": popis,
     }
@@ -1333,8 +1338,9 @@ def parse_transactions(text: str, banka: str, meta: Dict[str, str], typ_dokladu:
 
     elif banka == "Fio banka":
         blocks = split_fio_transaction_blocks(lines)
+        fio_mena = meta.get("mena", "CZK")
         for i, block in enumerate(blocks, start=1):
-            row = parse_fio_block(block, i, meta["rok"], meta["mesic"], typ_dokladu, bankovni_ucet, ucet_id)
+            row = parse_fio_block(block, i, meta["rok"], meta["mesic"], typ_dokladu, bankovni_ucet, ucet_id, fio_mena)
             if row:
                 rows.append(row)
             else:
@@ -1354,15 +1360,30 @@ def parse_transactions(text: str, banka: str, meta: Dict[str, str], typ_dokladu:
 
 
 def rows_to_csv_bytes(rows: List[Dict[str, str]]) -> bytes:
+    # Detekujeme zda jsou v datech cizí měna
+    meny = {r.get("Měna", "CZK") for r in rows}
+    ma_cizi_menu = bool(meny - {"CZK"})
+
+    if ma_cizi_menu:
+        # Pro cizí měnu použijeme sloupec "Osvob., bez DPH [měna]"
+        castka_sloupec = "Osvob., bez DPH [měna]"
+        fieldnames = ["Interní číslo", "Typ dokladu", "Bank.účet", "Typ pohybu", "Vystaveno",
+                      castka_sloupec, "Měna", "Variabilní symbol", "Popis"]
+        # Přejmenujeme klíč v každém řádku
+        rows_out = []
+        for r in rows:
+            row2 = dict(r)
+            row2[castka_sloupec] = row2.pop("Částka osvob. bez DPH [Kč]")
+            rows_out.append(row2)
+    else:
+        fieldnames = ["Interní číslo", "Typ dokladu", "Bank.účet", "Typ pohybu", "Vystaveno",
+                      "Částka osvob. bez DPH [Kč]", "Měna", "Variabilní symbol", "Popis"]
+        rows_out = rows
+
     output = io.StringIO()
-    writer = csv.DictWriter(
-        output,
-        fieldnames=["Interní číslo", "Typ dokladu", "Bank.účet", "Typ pohybu", "Vystaveno",
-                    "Částka osvob. bez DPH [Kč]", "Měna", "Variabilní symbol", "Popis"],
-        delimiter=";",
-    )
+    writer = csv.DictWriter(output, fieldnames=fieldnames, delimiter=";")
     writer.writeheader()
-    writer.writerows(rows)
+    writer.writerows(rows_out)
     return ("\ufeff" + output.getvalue()).encode("utf-8")
 
 
@@ -1454,7 +1475,7 @@ def main():
         </div>
         <div>
             <p class="header-app">PDF výpis → ABRA Flexi</p>
-            <p class="header-ver">v4.1 · ČS · ČSOB · RB · Fio · Moneta · Air Bank</p>
+            <p class="header-ver">v4.2 · ČS · ČSOB · RB · Fio · Moneta · Air Bank</p>
         </div>
     </div>
     """, unsafe_allow_html=True)
