@@ -221,6 +221,51 @@ def parse_account_and_symbols(line: str):
     return ucet, vs, ks, ss
 
 
+
+def sestavit_popis(
+    typ: str = "",           # typ transakce — jde NA KONEC
+    nazev: str = "",         # název protiúčtu
+    detaily: list = None,    # zprávy, poznámky — jdou NA ZAČÁTEK
+    ucet_proti: str = "",    # číslo protiúčtu
+    ks: str = "",
+    ss: str = "",
+    ident: str = "",
+) -> str:
+    """
+    Sestaví popis v pořadí:
+    1. Detaily/zprávy (nejdůležitější)
+    2. Název protiúčtu
+    3. Protiúčet (číslo)
+    4. KS, SS
+    5. ID
+    6. Typ transakce (jen pro info, na konci)
+    VS se záměrně vynechává — je v samostatném sloupci.
+    """
+    parts = []
+    # 1. Detaily/zprávy
+    for d in (detaily or []):
+        d = d.strip()
+        if d:
+            parts.append(d)
+    # 2. Název protiúčtu
+    if nazev and nazev.strip():
+        parts.append(nazev.strip())
+    # 3. Číslo protiúčtu
+    if ucet_proti:
+        parts.append(f"Protiúčet {ucet_proti}")
+    # 4. KS, SS
+    if ks:
+        parts.append(f"KS {ks}")
+    if ss:
+        parts.append(f"SS {ss}")
+    # 5. ID
+    if ident:
+        parts.append(f"ID {ident}")
+    # 6. Typ transakce — na konec
+    if typ and typ.strip():
+        parts.append(typ.strip())
+    return truncate_text(" | ".join([p for p in parts if p]), MAX_POPIS)
+
 # Fráze které se mohou vyskytnout v detailech ČSOB ale nejsou součástí transakce
 _CSOB_SKIP_PHRASES = (
     "Vážená klientko", "vážený kliente", "Vážený kliente", "zasíláme Vám výpis",
@@ -266,16 +311,12 @@ def parse_csob_block(block: List[str], poradi: int, rok: str, mesic: str, typ_do
                 vs = found_vs
         else:
             detail_texts.append(line)
-    popis_parts = [normalize_spaces(first["popis1"]).replace(";", ",")]
-    if ucet_proti:
-        popis_parts.append(f"Protiúčet {ucet_proti}")
-    if vs:
-        popis_parts.append(f"VS {vs}")
-    if ident:
-        popis_parts.append(f"ID {ident}")
-    for extra in detail_texts[:3]:
-        popis_parts.append(extra)
-    popis = truncate_text(" | ".join(popis_parts), MAX_POPIS)
+    popis = sestavit_popis(
+        typ=normalize_spaces(first["popis1"]).replace(";", ","),
+        detaily=detail_texts[:3],
+        ucet_proti=ucet_proti,
+        ident=ident,
+    )
     return {
         "Interní číslo": f"CB-{ucet_id[-6:]}-{int(rok)%100:02d}-{int(mesic):02d}-{poradi:03d}",
         "Typ dokladu": typ_dokladu,
@@ -469,22 +510,13 @@ def parse_rb_block(block: List[str], poradi: int, rok: str, mesic: str, typ_dokl
             detail_texts.append(line)
 
     # Sestavíme popis
-    popis_parts = [kategorie]
-    if typ_transakce:
-        popis_parts.append(typ_transakce)
-    if nazev_protiuctu:
-        popis_parts.append(nazev_protiuctu)
-    if ucet_proti:
-        popis_parts.append(f"Protiúčet {ucet_proti}")
-    if vs:
-        popis_parts.append(f"VS {vs}")
-    if ks:
-        popis_parts.append(f"KS {ks}")
-    for extra in detail_texts[:2]:
-        if extra.strip():
-            popis_parts.append(extra.strip())
-
-    popis = truncate_text(" | ".join([p for p in popis_parts if p]), MAX_POPIS)
+    popis = sestavit_popis(
+        typ=f"{kategorie} {typ_transakce}".strip() if typ_transakce else kategorie,
+        nazev=nazev_protiuctu,
+        detaily=detail_texts[:2],
+        ucet_proti=ucet_proti,
+        ks=ks,
+    )
 
     return {
         "Interní číslo": f"RB-{ucet_id[-6:]}-{int(rok)%100:02d}-{int(mesic):02d}-{poradi:03d}",
@@ -610,22 +642,19 @@ def parse_fio_block(block: List[str], poradi: int, rok: str, mesic: str, typ_dok
                 ss = m_ss.group(1)
             continue
         # Zpráva / popis
+        # Kód transakce (8+ číslic bez jiného obsahu) do popisu nepatří
+        if re.match(r"^\d{8,}$", line):
+            continue
         if not line.startswith("Nákup:") or not detail_texts:
             detail_texts.append(line)
 
-    popis_parts = [typ]
-    if ucet_proti:
-        popis_parts.append(f"Protiúčet {ucet_proti}")
-    if vs:
-        popis_parts.append(f"VS {vs}")
-    if ks:
-        popis_parts.append(f"KS {ks}")
-    if ss:
-        popis_parts.append(f"SS {ss}")
-    for extra in detail_texts[:3]:
-        if extra.strip():
-            popis_parts.append(extra.strip())
-    popis = truncate_text(" | ".join([p for p in popis_parts if p]), MAX_POPIS)
+    popis = sestavit_popis(
+        typ=typ,
+        detaily=detail_texts[:3],
+        ucet_proti=ucet_proti,
+        ks=ks,
+        ss=ss,
+    )
 
     return {
         "Interní číslo": f"FI-{ucet_id[-6:]}-{int(rok)%100:02d}-{int(mesic):02d}-{poradi:03d}",
@@ -777,22 +806,14 @@ def parse_airbank_block(block: List[str], poradi: int, rok: str, mesic: str, typ
         if line and not line.startswith("Pokračování") and "Air Bank" not in line:
             detail_texts.append(line)
 
-    popis_parts = [typ]
-    if nazev:
-        popis_parts.append(nazev)
-    if ucet_proti:
-        popis_parts.append(f"Protiúčet {ucet_proti}")
-    if vs:
-        popis_parts.append(f"VS {vs}")
-    if ks:
-        popis_parts.append(f"KS {ks}")
-    if ss:
-        popis_parts.append(f"SS {ss}")
-    for extra in detail_texts[:2]:
-        if extra and extra.strip():
-            popis_parts.append(extra.strip())
-
-    popis = truncate_text(" | ".join([p for p in popis_parts if p]), MAX_POPIS)
+    popis = sestavit_popis(
+        typ=typ,
+        nazev=nazev,
+        detaily=detail_texts[:2],
+        ucet_proti=ucet_proti,
+        ks=ks,
+        ss=ss,
+    )
 
     # Číslo výpisu pro unikátní ID — použijeme mesic (který může být cislo_vypisu)
     return {
@@ -975,8 +996,12 @@ def parse_moneta_block(block: List[str], poradi: int, rok: str, mesic: str, typ_
             if m2.group(3) and not ks:
                 ks = m2.group(3)
             continue
-        # Samotné datum valuta
-        if re.match(r"^\d{2}\.\d{2}\.\d{4}$", line):
+        # Samotné datum valuta nebo datum + KS
+        if re.match(r"^\d{2}\.\d{2}\.\d{4}(\s+\d{4})?$", line):
+            # Zachytíme KS pokud je za datem
+            m_ks = re.search(r"\d{4}$", line)
+            if m_ks and not ks:
+                ks = m_ks.group()
             continue
         # KS na samostatném řádku
         if re.match(r"^\d{4}$", line) and not ks:
@@ -985,30 +1010,27 @@ def parse_moneta_block(block: List[str], poradi: int, rok: str, mesic: str, typ_
         # KI: nebo AV: — přeskočíme
         if line.startswith("KI:") or line.startswith("AV:"):
             continue
-        # Popis / název protiúčtu
-        if not popis_typ:
-            # Zkusit oddělit popis od data: "TICHÝ MARTIN 15.12.2025"
-            m3 = re.match(r"^(.+?)\s+\d{2}\.\d{2}\.\d{4}\s*(\d{4})?$", line)
-            if m3:
-                popis_typ = m3.group(1).strip()
-                if m3.group(2) and not ks:
-                    ks = m3.group(2)
+        # Popis / název protiúčtu — odstraníme datum na konci
+        m3 = re.match(r"^(.+?)\s+\d{2}\.\d{2}\.\d{4}(\s+\d{4})?$", line)
+        if m3:
+            clean = m3.group(1).strip()
+            if m3.group(2) and not ks:
+                ks = m3.group(2).strip()
+            if not popis_typ:
+                popis_typ = clean
             else:
-                popis_typ = line
+                detail_texts.append(clean)
+        elif not popis_typ:
+            popis_typ = line
         else:
             detail_texts.append(line)
 
-    popis_parts = [popis_typ or "Platba"]
-    if ucet_proti:
-        popis_parts.append(f"Protiúčet {ucet_proti}")
-    if vs:
-        popis_parts.append(f"VS {vs}")
-    if ks:
-        popis_parts.append(f"KS {ks}")
-    for extra in detail_texts[:2]:
-        if extra.strip():
-            popis_parts.append(extra.strip())
-    popis = truncate_text(" | ".join([p for p in popis_parts if p]), MAX_POPIS)
+    popis = sestavit_popis(
+        typ=popis_typ or "Platba",
+        detaily=detail_texts[:2],
+        ucet_proti=ucet_proti,
+        ks=ks,
+    )
 
     return {
         "Interní číslo": f"MM-{ucet_id[-6:]}-{int(rok)%100:02d}-{int(mesic):02d}-{poradi:03d}",
@@ -1252,7 +1274,9 @@ def parse_csas_block(block: List[str], poradi: int, rok: str, mesic: str, typ_do
     for line in rest_lines:
         if is_pure_date_line(line):
             continue
-        if re.fullmatch(r"\d{4}", line) and not ks and typ.lower() == "trvalý příkaz":
+        if line.startswith("Číslo instrukce:"):
+            continue  # nepotřebná interní informace
+        if re.fullmatch(r"\d{4}", line) and not ks:
             ks = line
             continue
         mvs = re.search(r"\bVS[: ]?(\d+)\b", line)
@@ -1264,25 +1288,21 @@ def parse_csas_block(block: List[str], poradi: int, rok: str, mesic: str, typ_do
         mss = re.search(r"\bSS[: ]?(\d+)\b", line)
         if mss and not ss:
             ss = mss.group(1)
+        # Izolovaná číslice (KS/SS bez prefixu) do popisu nepatří
+        if re.fullmatch(r"\d{4}", line):
+            continue
         detail_texts.append(line)
     if nazev_protiuctu and not ucet_proti and typ.lower().startswith("vklad hotovosti"):
         detail_texts.insert(0, nazev_protiuctu)
         nazev_protiuctu = ""
-    popis_parts = [typ]
-    if nazev_protiuctu:
-        popis_parts.append(nazev_protiuctu)
-    if ucet_proti:
-        popis_parts.append(f"Protiúčet {ucet_proti}")
-    if vs:
-        popis_parts.append(f"VS {vs}")
-    if ks:
-        popis_parts.append(f"KS {ks}")
-    if ss:
-        popis_parts.append(f"SS {ss}")
-    for extra in detail_texts[:4]:
-        if extra:
-            popis_parts.append(extra)
-    popis = truncate_text(" | ".join([p for p in popis_parts if p]), MAX_POPIS)
+    popis = sestavit_popis(
+        typ=typ,
+        nazev=nazev_protiuctu,
+        detaily=detail_texts[:4],
+        ucet_proti=ucet_proti,
+        ks=ks,
+        ss=ss,
+    )
     return {
         "Interní číslo": f"CS-{ucet_id[-6:]}-{int(rok)%100:02d}-{int(mesic):02d}-{poradi:03d}",
         "Typ dokladu": typ_dokladu,
@@ -1479,7 +1499,7 @@ def main():
         </div>
         <div>
             <p class="header-app">PDF výpis → ABRA Flexi</p>
-            <p class="header-ver">v4.3 · ČS · ČSOB · RB · Fio · Moneta · Air Bank</p>
+            <p class="header-ver">v4.4 · ČS · ČSOB · RB · Fio · Moneta · Air Bank</p>
         </div>
     </div>
     """, unsafe_allow_html=True)
