@@ -135,9 +135,13 @@ def extract_statement_meta(text: str, banka: str) -> Dict[str, str]:
         m = re.search(r"Číslo účtu:\s*([^\s]+)", text)
         if m:
             meta["ucet_pdf"] = m.group(1).strip()
-        m = re.search(r"Měna účtu\s+(\w+)", text)
+        m = re.search(r"Měna účtu\s+(\S+)", text)
         if m:
-            meta["mena"] = m.group(1).strip()
+            raw_mena = m.group(1).strip()
+            # Normalizace: Kč → CZK, EUR → EUR atd.
+            mena_map = {"Kč": "CZK", "kč": "CZK", "CZK": "CZK", "EUR": "EUR",
+                        "USD": "USD", "CHF": "CHF", "GBP": "GBP"}
+            meta["mena"] = mena_map.get(raw_mena, raw_mena.upper())
         else:
             meta["mena"] = "CZK"
 
@@ -1475,7 +1479,7 @@ def main():
         </div>
         <div>
             <p class="header-app">PDF výpis → ABRA Flexi</p>
-            <p class="header-ver">v4.2 · ČS · ČSOB · RB · Fio · Moneta · Air Bank</p>
+            <p class="header-ver">v4.3 · ČS · ČSOB · RB · Fio · Moneta · Air Bank</p>
         </div>
     </div>
     """, unsafe_allow_html=True)
