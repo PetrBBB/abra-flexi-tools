@@ -325,9 +325,19 @@ def parse_csob_block(block: List[str], poradi: int, rok: str, mesic: str, typ_do
                 vs = found_vs
         else:
             detail_texts.append(line)
+    # Filtrujeme detail_texts: kódy karet (číselné bloky) pryč, zachováme "Místo:" a ostatní text
+    clean_details = []
+    for d in detail_texts[:4]:
+        # Přeskočíme řádky které jsou jen čísla (kód karty, SS, ident)
+        if re.match(r"^[\d\s]+$", d):
+            continue
+        # Přeskočíme řádky s číslem karty (XXXX vzor)
+        if re.search(r"XXXXXXXXXXXX|\d{4}\s+\d{4}\s+\d{4}", d):
+            continue
+        clean_details.append(d)
     popis = sestavit_popis(
         typ=normalize_spaces(first["popis1"]).replace(";", ","),
-        detaily=detail_texts[:3],
+        detaily=clean_details[:3],
         ucet_proti=ucet_proti,
         ident=ident,
     )
@@ -515,8 +525,8 @@ def parse_rb_block(block: List[str], poradi: int, rok: str, mesic: str, typ_dokl
         radek3 = re.sub(r"^\d{10}\s*", "", radek3).strip()
         if radek3:
             # Může obsahovat název protiúčtu a poznámku oddělené mezerou
-            nazev_protiuctu = radek3
-
+            # Odstraníme čísla z konce (SS, kódy) — název firmy je text
+            nazev_protiuctu = re.sub(r"\s+\d{5,}\s*$", "", radek3).strip()
     # Řádky 4+ jsou další poznámky
     for line in block[3:]:
         line = normalize_spaces(line)
@@ -524,10 +534,13 @@ def parse_rb_block(block: List[str], poradi: int, rok: str, mesic: str, typ_dokl
             detail_texts.append(line)
 
     # Sestavíme popis
+    # U RB: detaily mohou obsahovat zprávu + název firmy — oddělíme
+    rb_detaily = [d for d in detail_texts[:2]
+                  if not re.match(r"^[\d\s]+$", d)]
     popis = sestavit_popis(
         typ=f"{kategorie} {typ_transakce}".strip() if typ_transakce else kategorie,
         nazev=nazev_protiuctu,
-        detaily=detail_texts[:2],
+        detaily=rb_detaily,
         ucet_proti=ucet_proti,
         ks=ks,
     )
@@ -662,9 +675,13 @@ def parse_fio_block(block: List[str], poradi: int, rok: str, mesic: str, typ_dok
         if not line.startswith("Nákup:") or not detail_texts:
             detail_texts.append(line)
 
+    _FIO_TECH = ("Trvalý příkaz", "Okamžitá odchozí platba", "Okamžitá příchozí platba",
+                  "Bezhotovostní vklad", "Příjem převodem")
+    fio_detaily = [d for d in detail_texts[:3]
+                   if d and not any(d.startswith(t) for t in _FIO_TECH)]
     popis = sestavit_popis(
         typ=typ,
-        detaily=detail_texts[:3],
+        detaily=fio_detaily,
         ucet_proti=ucet_proti,
         ks=ks,
         ss=ss,
@@ -786,35 +803,32 @@ def parse_kb_block(block: List[str], poradi: int, rok: str, mesic: str, typ_dokl
         vs = tokens[-1]
         tokens = tokens[:-1]
 
-    # Protiúčet může být v tokenech (pro OKAMŽITÁ ODCHOZÍ ÚHRADA bez názvu)
-    # Typ = slova před protiúčtem nebo názvem
-    typ_tokens = []
-    rest_tokens = []
-    for tok in tokens:
-        if _KB_UCET_RE.match(tok):
-            ucet_proti = tok
-            rest_tokens = tokens[tokens.index(tok)+1:]
+    # Přesné typy KB transakcí — vždy 2-3 slova na začátku
+    _KB_TYPY = (
+        "OKAMŽITÁ ODCHOZÍ ÚHRADA", "OKAMŽITÁ PŘÍCHOZÍ ÚHRADA",
+        "ODCHOZÍ ÚHRADA", "PŘÍCHOZÍ ÚHRADA",
+        "TRVALÝ PŘÍKAZ", "INKASO", "VÝBĚR HOTOVOSTI",
+        "PŘÍCHOZÍ PLATBA", "ODCHOZÍ PLATBA",
+    )
+    zbytek_str = " ".join(tokens)
+    typ = ""
+    nazev_po_typu = zbytek_str
+    for kb_typ in _KB_TYPY:
+        if zbytek_str.upper().startswith(kb_typ):
+            typ = zbytek_str[:len(kb_typ)].strip()
+            nazev_po_typu = zbytek_str[len(kb_typ):].strip()
             break
-        typ_tokens.append(tok)
-    else:
-        rest_tokens = []
+    if not typ:
+        typ = zbytek_str  # fallback
 
-    if ucet_proti:
-        typ = " ".join(typ_tokens)
-    else:
-        # Typ je na začátku (velkými písmeny), název za ním
-        typ_words = []
-        nazev_words = []
-        for tok in tokens:
-            if tok.isupper() or re.match(r"^[A-ZÁČĎÉĚÍŇÓŘŠŤÚŮÝŽ]+$", tok):
-                if not nazev_words:
-                    typ_words.append(tok)
-                else:
-                    nazev_words.append(tok)
-            else:
-                nazev_words.append(tok)
-        typ = " ".join(typ_words)
-        nazev = " ".join(nazev_words).strip()
+    # Protiúčet může být v nazev_po_typu
+    for tok in nazev_po_typu.split():
+        if _KB_UCET_RE.match(tok) and not ucet_proti:
+            ucet_proti = tok
+            nazev_po_typu = nazev_po_typu.replace(tok, "").strip()
+            break
+
+    nazev = nazev_po_typu.strip(" -")
 
     # Zpracujeme řádek 2: "ID [protiúčet] [KS] [SS]"
     for line in block[1:]:
@@ -1192,11 +1206,13 @@ def parse_moneta_block(block: List[str], poradi: int, rok: str, mesic: str, typ_
                 ks = m2.group(3)
             continue
         # Samotné datum valuta nebo datum + KS
-        if re.match(r"^\d{2}\.\d{2}\.\d{4}(\s+\d{4})?$", line):
-            # Zachytíme KS pokud je za datem
-            m_ks = re.search(r"\d{4}$", line)
+        if re.match(r"^\d{2}\.\d{2}\.\d{4}(\s+\d{1,4})?$", line):
+            # Zachytíme KS pokud je za datem — ale ne rok (4 číslice > 1900)
+            m_ks = re.search(r"\s+(\d{1,4})$", line)
             if m_ks and not ks:
-                ks = m_ks.group()
+                ks_val = m_ks.group(1)
+                if not (len(ks_val) == 4 and int(ks_val) > 1900):
+                    ks = ks_val
             continue
         # KS na samostatném řádku
         if re.match(r"^\d{4}$", line) and not ks:
@@ -1459,7 +1475,9 @@ def parse_csas_block(block: List[str], poradi: int, rok: str, mesic: str, typ_do
     ks = ""
     ss = ""
     if lines:
-        if not is_pure_date_line(lines[0]) and not lines[0].startswith("Číslo instrukce:"):
+        if (not is_pure_date_line(lines[0])
+                and not lines[0].startswith("Číslo instrukce:")
+                and not re.fullmatch(r"\d{1,5}", lines[0])):
             nazev_protiuctu = lines[0]
             rest_lines = lines[1:]
         else:
@@ -1471,8 +1489,10 @@ def parse_csas_block(block: List[str], poradi: int, rok: str, mesic: str, typ_do
             continue
         if line.startswith("Číslo instrukce:"):
             continue  # nepotřebná interní informace
-        if re.fullmatch(r"\d{4}", line) and not ks:
-            ks = line
+        # Izolované číslice jsou KS/SS — zachytíme ale nepřidáváme do detailů
+        if re.fullmatch(r"\d{1,5}", line):
+            if not ks:
+                ks = line
             continue
         mvs = re.search(r"\bVS[: ]?(\d+)\b", line)
         if mvs and not vs:
@@ -1483,8 +1503,8 @@ def parse_csas_block(block: List[str], poradi: int, rok: str, mesic: str, typ_do
         mss = re.search(r"\bSS[: ]?(\d+)\b", line)
         if mss and not ss:
             ss = mss.group(1)
-        # Izolovaná číslice (KS/SS bez prefixu) do popisu nepatří
-        if re.fullmatch(r"\d{4}", line):
+        # Izolované číslice (KS/SS bez prefixu) do popisu nepatří
+        if re.fullmatch(r"\d{1,5}", line):
             continue
         detail_texts.append(line)
     if nazev_protiuctu and not ucet_proti and typ.lower().startswith("vklad hotovosti"):
@@ -1713,7 +1733,7 @@ def main():
         </div>
         <div>
             <p class="header-app">PDF výpis → ABRA Flexi</p>
-            <p class="header-ver">v4.5 · ČS · ČSOB · RB · Fio · Moneta · Air Bank · KB</p>
+            <p class="header-ver">v4.7 · ČS · ČSOB · RB · Fio · Moneta · Air Bank · KB</p>
         </div>
     </div>
     """, unsafe_allow_html=True)
