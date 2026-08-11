@@ -902,7 +902,7 @@ def parse_kb_block(block: List[str], poradi: int, rok: str, mesic: str, typ_dokl
 
 _KB_NDB_HEADER = re.compile(
     r"^(?P<datum>\d{1,2}\.\s*\d{1,2}\.\s*\d{4})\s+"
-    r"(?P<rest>.+?)\s+"
+    r"(?P<rest>(?!-\d)[^\n]+?\s+)?"  # jméno/protiúčet — nesmí začínat zápornou částkou
     r"(?P<castka>-\d{1,3}(?:\s\d{3})*,\d{2}|\d{1,3}(?:\s\d{3})*,\d{2})\s+Kč$"
 )
 
@@ -990,13 +990,16 @@ def parse_kb_ndb_block(block: List[str], poradi: int, rok: str, mesic: str, typ_
     castka_abs = abs(castka)
 
     # Ze zbytku hlavního řádku: [Název] [protiúčet]
-    rest = m.group("rest").strip()
+    rest = (m.group("rest") or "").strip()
     tokens = rest.split()
     ucet_proti = ""
     nazev_tokens = []
     for tok in tokens:
         if _KB_UCET_RE.match(tok) and not ucet_proti:
             ucet_proti = tok
+        elif re.match(r"^-\d+$", tok):
+            # Zbytek záporné části částky (artifact lazy regex) — ignorujeme
+            pass
         else:
             nazev_tokens.append(tok)
     nazev = " ".join(nazev_tokens).strip()
@@ -1949,7 +1952,7 @@ def main():
         </div>
         <div>
             <p class="header-app">PDF výpis → ABRA Flexi</p>
-            <p class="header-ver">v4.8 · ČS · ČSOB · RB · Fio · Moneta · Air Bank · KB</p>
+            <p class="header-ver">v4.9 · ČS · ČSOB · RB · Fio · Moneta · Air Bank · KB</p>
         </div>
     </div>
     """, unsafe_allow_html=True)
