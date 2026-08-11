@@ -91,16 +91,29 @@ def extract_statement_meta(text: str, banka: str) -> Dict[str, str]:
             meta["nazev_uctu"] = m.group(1).strip()
 
     elif banka == "Komerční banka":
-        m = re.search(r"Za období:\s*(\d{2}\.\d{2})\. - (\d{2})\.(\d{2})\.(\d{4})", text)
-        if m:
-            meta["mesic"] = m.group(3)
-            meta["rok"] = m.group(4)
-        m = re.search(r"k účtu:\s*([\d-]+/\d{4})", text)
-        if m:
-            meta["ucet_pdf"] = m.group(1).strip()
-        m = re.search(r"Číslo výpisu:\s*(\d+)", text)
-        if m:
-            meta["cislo_vypisu"] = f"{int(m.group(1)):02d}"
+        if "VYPIS1_NDB" in text or "Výpis z účtu" in text[:500]:
+            # NDB formát: "Výpis z účtu 1. 1. 2026 – 28. 2. 2026"
+            meta["kb_format"] = "NDB"
+            m = re.search(r"Výpis z účtu.*?–.*?(\d{1,2})\. (\d{1,2})\. (\d{4})", text)
+            if m:
+                meta["mesic"] = f"{int(m.group(2)):02d}"
+                meta["rok"] = m.group(3)
+            m = re.search(r"Číslo účtu\s+([\d-]+/\d{4})", text)
+            if m:
+                meta["ucet_pdf"] = m.group(1).strip()
+        else:
+            # Starý formát VÝPIS PERIODICKÝ
+            meta["kb_format"] = "PERIODICKY"
+            m = re.search(r"Za období:\s*(\d{2}\.\d{2})\. - (\d{2})\.(\d{2})\.(\d{4})", text)
+            if m:
+                meta["mesic"] = m.group(3)
+                meta["rok"] = m.group(4)
+            m = re.search(r"k účtu:\s*([\d-]+/\d{4})", text)
+            if m:
+                meta["ucet_pdf"] = m.group(1).strip()
+            m = re.search(r"Číslo výpisu:\s*(\d+)", text)
+            if m:
+                meta["cislo_vypisu"] = f"{int(m.group(1)):02d}"
 
     elif banka == "Air Bank":
         m = re.search(r"Období výpisu:\s*(\d{1,2})\.\s*(\d{1,2})\.\s*(\d{4})\s*-\s*(\d{1,2})\.\s*(\d{1,2})\.\s*(\d{4})", text)
@@ -879,6 +892,200 @@ def parse_kb_block(block: List[str], poradi: int, rok: str, mesic: str, typ_dokl
         "Popis": popis,
     }
 
+
+# ---------------- Komerční banka NDB parser ("Výpis z účtu") ----------------
+# Formát každé transakce:
+# Řádek 1: "D. M. YYYY [Název] [protiúčet] [-]X XXX,XX Kč"
+# Řádek 2: "Datum provedení Kód transakce Typ transakce VS SS KS" (přeskočit)
+# Řádek 3: "D. M. YYYY kód typ VS SS KS"
+# Řádek 4+: "Zpráva pro příjemce: ...", "Popis pro mě: ...", nebo plain text
+
+_KB_NDB_HEADER = re.compile(
+    r"^(?P<datum>\d{1,2}\.\s*\d{1,2}\.\s*\d{4})\s+"
+    r"(?P<rest>.+?)\s+"
+    r"(?P<castka>-\d{1,3}(?:\s\d{3})*,\d{2}|\d{1,3}(?:\s\d{3})*,\d{2})\s+Kč$"
+)
+
+_KB_NDB_DETAIL_HDR = re.compile(
+    r"^Datum provedení Kód transakce"
+)
+_KB_NDB_DETAIL_RE = re.compile(
+    r"^\d{1,2}\.\s*\d{1,2}\.\s*\d{4}\s+\S+\s+\S"
+)
+
+_KB_NDB_SKIP = (
+    "Komerční banka, a. s., se sídlem:",
+    "Zapsaná v obchodním rejstříku",
+    "Code: VYPIS1_NDB",
+    "Celkový počet transakcí",
+    "Úroková sazba",
+    "Vklad na tomto účtu",
+    "k dispozici na",
+    "Výpis z účtu",
+    "Datum výpisu",
+    "Informace o účtu",
+    "Hlavní měna účtu",
+    "Zůstatky", "Česká koruna",
+    "Nezahrnuje limit",
+    "MILOŠ", "Podnikající pod",
+    "Sídlo:", "IČO:", "Zápis v",
+)
+
+
+def split_kb_ndb_blocks(lines: List[str]) -> List[List[str]]:
+    relevant = []
+    in_section = False
+    for raw in lines:
+        line = normalize_spaces(raw)
+        if not line:
+            continue
+        if line == "Transakce":
+            in_section = True
+            continue
+        if not in_section:
+            continue
+        if line.startswith("Celkový počet transakcí"):
+            break
+        if any(line.startswith(p) for p in _KB_NDB_SKIP):
+            continue
+        if re.match(r"^\d+/\d+$", line):  # stránky "1/7"
+            continue
+        relevant.append(line)
+
+    blocks = []
+    current = []
+    for line in relevant:
+        if _KB_NDB_HEADER.match(line):
+            if current:
+                blocks.append(current)
+            current = [line]
+        elif current:
+            current.append(line)
+    if current:
+        blocks.append(current)
+    return blocks
+
+
+def parse_kb_ndb_block(block: List[str], poradi: int, rok: str, mesic: str, typ_dokladu: str, bankovni_ucet: str, ucet_id: str = "UCET"):
+    if not block:
+        return None
+    m = _KB_NDB_HEADER.match(normalize_spaces(block[0]))
+    if not m:
+        return None
+
+    datum_str = m.group("datum").replace(" ", "")  # "2.1.2026"
+    casti = datum_str.split(".")
+    try:
+        datum = f"{casti[2]}-{int(casti[1]):02d}-{int(casti[0]):02d}"
+    except (IndexError, ValueError):
+        return None
+
+    castka_str = m.group("castka").replace(" ", "").replace(",", ".")
+    try:
+        castka = float(castka_str)
+    except ValueError:
+        return None
+
+    typ_pohybu = "typPohybu.prijem" if castka > 0 else "typPohybu.vydej"
+    castka_abs = abs(castka)
+
+    # Ze zbytku hlavního řádku: [Název] [protiúčet]
+    rest = m.group("rest").strip()
+    tokens = rest.split()
+    ucet_proti = ""
+    nazev_tokens = []
+    for tok in tokens:
+        if _KB_UCET_RE.match(tok) and not ucet_proti:
+            ucet_proti = tok
+        else:
+            nazev_tokens.append(tok)
+    nazev = " ".join(nazev_tokens).strip()
+
+    # Z detailního řádku: typ transakce a VS
+    typ = ""
+    vs = ""
+    ks = ""
+    ss = ""
+    zpravy = []
+
+    skip_next = False
+    for line in block[1:]:
+        line = normalize_spaces(line)
+        if not line:
+            continue
+        if _KB_NDB_DETAIL_HDR.match(line):
+            skip_next = True  # přeskočíme záhlaví tabulky
+            continue
+        if skip_next:
+            # Datový řádek: "D. M. YYYY kód_transakce typ VS SS KS"
+            skip_next = False
+            toks = line.split()
+            i = 0
+            # Přeskočíme datum (D. M. YYYY) — tokeny ve tvaru "dd." "mm." "yyyy"
+            while i < len(toks) and (re.match(r"^\d{1,2}\.$", toks[i]) or
+                                      (i > 0 and re.match(r"^\d{4}$", toks[i]))):
+                i += 1
+            # Kód transakce (alfanumerický, min 5 znaků)
+            if i < len(toks) and re.match(r"^[A-Z0-9.]{5,}$", toks[i]):
+                i += 1
+            # Typ transakce — slova dokud nenarazíme na číslo nebo -
+            typ_words = []
+            while i < len(toks) and not re.match(r"^(\d+|-)$", toks[i]):
+                typ_words.append(toks[i])
+                i += 1
+            typ = " ".join(typ_words)
+            # VS, SS, KS — zbývající (přeskočíme "-" a "0000000000")
+            remaining = [t for t in toks[i:] if t not in ("-", "0000000000")]
+            if remaining and not vs:
+                vs = remaining[0]
+            if len(remaining) > 2 and not ks:
+                ks = remaining[2] if remaining[2] not in ("0", "0000000000") else ""
+            continue
+
+        # ATM info — přeskočíme
+        if re.match(r"^(HLINSKO|ATM ID:|bankomatu)", line):
+            continue
+        # Zpráva pro příjemce / Popis pro mě
+        if line.startswith("Zpráva pro příjemce:"):
+            z = line[len("Zpráva pro příjemce:"):].strip()
+            if z:
+                zpravy.append(z)
+            continue
+        if line.startswith("Popis pro mě:"):
+            z = line[len("Popis pro mě:"):].strip()
+            if z:
+                zpravy.append(z)
+            continue
+        # Jiný text — může to být zpráva bez prefixu (PLATBA, KAVALÍR, ...)
+        if not re.match(r"^\d+/\d+$", line) and not re.match(r"^\d{1,2}\.", line):
+            zpravy.append(line)
+
+    # VS z 0000000000 vyčistíme
+    vs = vs if vs and vs not in ("0000000000", "0") else ""
+    ks = ks if ks and ks not in ("0000000000", "0") else ""
+    ss = ss if ss and ss not in ("0000000000", "0") else ""
+
+    popis = sestavit_popis(
+        typ=typ,
+        nazev=nazev,
+        detaily=zpravy[:2],
+        ucet_proti=ucet_proti,
+        ks=ks,
+        ss=ss,
+    )
+
+    return {
+        "Interní číslo": f"KB-{ucet_id[-6:]}-{int(rok)%100:02d}-{int(mesic):02d}-{poradi:03d}",
+        "Typ dokladu": typ_dokladu,
+        "Bank.účet": bankovni_ucet,
+        "Typ pohybu": typ_pohybu,
+        "Vystaveno": datum,
+        "Částka osvob. bez DPH [Kč]": f"{castka_abs:.2f}",
+        "Měna": "CZK",
+        "Variabilní symbol": vs,
+        "Popis": popis,
+    }
+
 # ---------------- Air Bank parser ----------------
 # Formát každé transakce (2 řádky):
 # Řádek 1: "DD.MM.YYYY Typ [Název/VS] částka,xx 0,00"
@@ -1564,15 +1771,24 @@ def parse_transactions(text: str, banka: str, meta: Dict[str, str], typ_dokladu:
                 skipped += 1
 
     elif banka == "Komerční banka":
-        blocks = split_kb_transaction_blocks(lines)
-        kb_mesic = meta.get("cislo_vypisu") or meta["mesic"]
-        for i, block in enumerate(blocks, start=1):
-            row = parse_kb_block(block, i, meta["rok"], kb_mesic, typ_dokladu, bankovni_ucet, ucet_id)
-            if row:
-                rows.append(row)
-            else:
-                skipped += 1
-
+        if meta.get("kb_format") == "NDB":
+            blocks = split_kb_ndb_blocks(lines)
+            kb_mesic = meta.get("cislo_vypisu") or meta["mesic"]
+            for i, block in enumerate(blocks, start=1):
+                row = parse_kb_ndb_block(block, i, meta["rok"], kb_mesic, typ_dokladu, bankovni_ucet, ucet_id)
+                if row:
+                    rows.append(row)
+                else:
+                    skipped += 1
+        else:
+            blocks = split_kb_transaction_blocks(lines)
+            kb_mesic = meta.get("cislo_vypisu") or meta["mesic"]
+            for i, block in enumerate(blocks, start=1):
+                row = parse_kb_block(block, i, meta["rok"], kb_mesic, typ_dokladu, bankovni_ucet, ucet_id)
+                if row:
+                    rows.append(row)
+                else:
+                    skipped += 1
     elif banka == "Air Bank":
         blocks = split_airbank_transaction_blocks(lines)
         ab_mesic = meta.get("cislo_vypisu") or meta["mesic"]
@@ -1733,7 +1949,7 @@ def main():
         </div>
         <div>
             <p class="header-app">PDF výpis → ABRA Flexi</p>
-            <p class="header-ver">v4.7 · ČS · ČSOB · RB · Fio · Moneta · Air Bank · KB</p>
+            <p class="header-ver">v4.8 · ČS · ČSOB · RB · Fio · Moneta · Air Bank · KB</p>
         </div>
     </div>
     """, unsafe_allow_html=True)
