@@ -67,16 +67,30 @@ def extract_statement_meta(text: str, banka: str) -> Dict[str, str]:
     meta = {"rok": "", "mesic": "", "ucet_pdf": "", "nazev_uctu": ""}
 
     if banka == "ČSOB":
-        m = re.search(r"Období:\s*(\d{1,2})\.\s*(\d{1,2})\.\s*(\d{4})\s*-\s*(\d{1,2})\.\s*(\d{1,2})\.\s*(\d{4})", text)
-        if m:
-            meta["mesic"] = f"{int(m.group(2)):02d}"
-            meta["rok"] = m.group(3)
-        m = re.search(r"Účet:\s*([^\n]+)", text)
-        if m:
-            meta["ucet_pdf"] = m.group(1).strip()
-        m = re.search(r"Název účtu:\s*([^\n]+)", text)
-        if m:
-            meta["nazev_uctu"] = m.group(1).strip()
+        if "Vybrané pohyby na účtu" in text:
+            meta["csob_format"] = "VYBRANE_POHYBY"
+            m = re.search(r"Nastavený filtr:.*?do\s+(\d{1,2})\.(\d{1,2})\.(\d{4})", text)
+            if m:
+                meta["mesic"] = f"{int(m.group(2)):02d}"
+                meta["rok"] = m.group(3)
+            m = re.search(r"Číslo účtu:\s*([\d/]+)", text)
+            if m:
+                meta["ucet_pdf"] = m.group(1).strip()
+            m = re.search(r"Název účtu:\s*([^\n]+)", text)
+            if m:
+                meta["nazev_uctu"] = m.group(1).strip()
+        else:
+            meta["csob_format"] = "STANDARD"
+            m = re.search(r"Období:\s*(\d{1,2})\.\s*(\d{1,2})\.\s*(\d{4})\s*-\s*(\d{1,2})\.\s*(\d{1,2})\.\s*(\d{4})", text)
+            if m:
+                meta["mesic"] = f"{int(m.group(2)):02d}"
+                meta["rok"] = m.group(3)
+            m = re.search(r"Účet:\s*([^\n]+)", text)
+            if m:
+                meta["ucet_pdf"] = m.group(1).strip()
+            m = re.search(r"Název účtu:\s*([^\n]+)", text)
+            if m:
+                meta["nazev_uctu"] = m.group(1).strip()
 
     elif banka == "Raiffeisenbank":
         m = re.search(r"za období:\s*(\d{1,2})\.\s*(\d{1,2})\.\s*(\d{4})\s*-\s*(\d{1,2})\.\s*(\d{1,2})\.\s*(\d{4})", text, re.IGNORECASE)
@@ -1247,6 +1261,155 @@ def parse_airbank_block(block: List[str], poradi: int, rok: str, mesic: str, typ
         "Popis": popis,
     }
 
+
+# ---------------- ČSOB "Vybrané pohyby na účtu" parser (filtrovaný report) ----------------
+# Formát každé transakce (1+ řádků):
+# Řádek 1: "DD.MM.YYYY [Název protiúčtu] Popis [-]X XXX,XX X XXX,XX" (částka + zůstatek)
+# Řádek 2: "[protiúčet] [VS] [KS] [SS]" nebo "Místo: ... Částka: ..."
+# Řádek 3+: další detaily (Místo:, Částka:, adresa)
+
+_CSOB_VP_HEADER = re.compile(
+    r"^(?P<datum>\d{2}\.\d{2}\.\d{4})\s+"
+    r"(?P<rest>.+?)\s+"
+    r"(?P<castka>-?\d{1,3}(?:\s\d{3})*,\d{2})\s+"
+    r"(?P<zustatek>\d{1,3}(?:\s\d{3})*,\d{2})$"
+)
+
+_CSOB_VP_SKIP = (
+    "Vybrané pohyby na účtu", "Ze dne:", "Číslo účtu:", "Měna:", "Název účtu:",
+    "Nastavený filtr:", "Datum Název protiúčtu", "Protiúčet nebo poznámka",
+    "Disclaimer", "Nejedná se o výpis", "Dokument generován",
+    "Československá obchodní banka", "Radlická 333/150", "zapsaná v obchodním",
+)
+
+_CSOB_VP_UCET_RE = re.compile(r"^\d{1,6}-\d{1,10}/\d{4}$|^\d{1,16}/\d{4}$")
+
+
+def split_csob_vp_blocks(lines: List[str]) -> List[List[str]]:
+    relevant = []
+    in_section = False
+    for raw in lines:
+        line = normalize_spaces(raw)
+        if not line:
+            continue
+        if line.startswith("Datum Název protiúčtu"):
+            in_section = True
+            continue
+        if not in_section:
+            continue
+        if line.startswith("Disclaimer"):
+            break
+        if any(line.startswith(p) for p in _CSOB_VP_SKIP):
+            continue
+        relevant.append(line)
+
+    blocks = []
+    current = []
+    for line in relevant:
+        if _CSOB_VP_HEADER.match(line):
+            if current:
+                blocks.append(current)
+            current = [line]
+        elif current:
+            current.append(line)
+    if current:
+        blocks.append(current)
+    return blocks
+
+
+def parse_csob_vp_block(block: List[str], poradi: int, rok: str, mesic: str, typ_dokladu: str, bankovni_ucet: str, ucet_id: str = "UCET"):
+    if not block:
+        return None
+    m = _CSOB_VP_HEADER.match(normalize_spaces(block[0]))
+    if not m:
+        return None
+
+    datum_str = m.group("datum")
+    datum = f"{datum_str[6:10]}-{datum_str[3:5]}-{datum_str[0:2]}"
+
+    castka_str = m.group("castka").replace(" ", "").replace(",", ".")
+    try:
+        castka = float(castka_str)
+    except ValueError:
+        return None
+
+    typ_pohybu = "typPohybu.prijem" if castka > 0 else "typPohybu.vydej"
+    castka_abs = abs(castka)
+
+    rest = m.group("rest").strip()
+    # Rest může obsahovat [Název protiúčtu] + Popis transakce.
+    # Rozdělíme podle známých klíčových slov popisu transakce.
+    _CSOB_VP_TYP_KEYWORDS = (
+        "Příchozí úhrada SEPA", "Odchozí úhrada SEPA",
+        "Příchozí úhrada", "Odchozí úhrada",
+        "Trvalý příkaz elektronicky", "Transakce platební kartou",
+        "Poplatek-platební karta", "Platba kartou na poště",
+        "Za vedení účtu",
+    )
+    typ = rest
+    nazev = ""
+    for kw in _CSOB_VP_TYP_KEYWORDS:
+        idx = rest.find(kw)
+        if idx > 0:
+            nazev = rest[:idx].strip()
+            typ = rest[idx:].strip()
+            break
+        elif idx == 0:
+            typ = rest
+            break
+
+    ucet_proti = ""
+    vs = ""
+    ks = ""
+    zpravy = []
+
+    for line in block[1:]:
+        line = normalize_spaces(line)
+        if not line:
+            continue
+        # Protiúčet + VS/KS/SS na jednom řádku (číselné tokeny)
+        toks = line.split()
+        if toks and all(re.match(r"^[\d/-]+$", t) for t in toks):
+            for t in toks:
+                if _CSOB_VP_UCET_RE.match(t) and not ucet_proti:
+                    ucet_proti = t
+                elif re.match(r"^\d{4,}$", t) and not vs and not _CSOB_VP_UCET_RE.match(t):
+                    vs = t
+                elif re.match(r"^\d{1,3}$", t) and not ks:
+                    ks = t
+            continue
+        # Detaily: "Místo: ...", "Částka: ...", adresa
+        if line.startswith("Místo:"):
+            zpravy.append(line[len("Místo:"):].strip())
+            continue
+        if line.startswith("Částka:") or line.startswith("Číslo transakce:") or line.startswith("BIC:") \
+           or line.startswith("Reference příkazce:") or line.startswith("Identifikace:") \
+           or line.startswith("Částka, měna"):
+            continue  # technické detaily nepotřebujeme v popisu
+        # Zbylý text (adresa, poznámka) — jen pokud není čistě technický
+        if not re.match(r"^[A-Z]{2}\d{10,}$", line):  # IBAN
+            zpravy.append(line)
+
+    popis = sestavit_popis(
+        typ=typ,
+        nazev=nazev,
+        detaily=zpravy[:2],
+        ucet_proti=ucet_proti,
+        ks=ks,
+    )
+
+    return {
+        "Interní číslo": f"CB-{ucet_id[-6:]}-{int(rok)%100:02d}-{int(mesic):02d}-{poradi:03d}",
+        "Typ dokladu": typ_dokladu,
+        "Bank.účet": bankovni_ucet,
+        "Typ pohybu": typ_pohybu,
+        "Vystaveno": datum,
+        "Částka osvob. bez DPH [Kč]": f"{castka_abs:.2f}",
+        "Měna": "CZK",
+        "Variabilní symbol": vs,
+        "Popis": popis,
+    }
+
 # ---------------- Moneta Money Bank parser ----------------
 # Formát každé transakce (3+ řádky):
 # Řádek 1: "DD.MM.YYYY [protiúčet] kód_transakce [VS] [- ]částka,00"
@@ -1749,13 +1912,22 @@ def parse_transactions(text: str, banka: str, meta: Dict[str, str], typ_dokladu:
     ucet_raw = meta.get("ucet_pdf", "")
     ucet_id = ucet_raw.split("/")[0].replace("-", "").strip()[:10] or "UCET"
     if banka == "ČSOB":
-        blocks = split_csob_transaction_blocks(lines)
-        for i, block in enumerate(blocks, start=1):
-            row = parse_csob_block(block, i, meta["rok"], meta["mesic"], typ_dokladu, bankovni_ucet, ucet_id)
-            if row:
-                rows.append(row)
-            else:
-                skipped += 1
+        if meta.get("csob_format") == "VYBRANE_POHYBY":
+            blocks = split_csob_vp_blocks(lines)
+            for i, block in enumerate(blocks, start=1):
+                row = parse_csob_vp_block(block, i, meta["rok"], meta["mesic"], typ_dokladu, bankovni_ucet, ucet_id)
+                if row:
+                    rows.append(row)
+                else:
+                    skipped += 1
+        else:
+            blocks = split_csob_transaction_blocks(lines)
+            for i, block in enumerate(blocks, start=1):
+                row = parse_csob_block(block, i, meta["rok"], meta["mesic"], typ_dokladu, bankovni_ucet, ucet_id)
+                if row:
+                    rows.append(row)
+                else:
+                    skipped += 1
     elif banka == "Raiffeisenbank":
         blocks = split_rb_transaction_blocks(lines)
         for i, block in enumerate(blocks, start=1):
@@ -1952,7 +2124,7 @@ def main():
         </div>
         <div>
             <p class="header-app">PDF výpis → ABRA Flexi</p>
-            <p class="header-ver">v4.9 · ČS · ČSOB · RB · Fio · Moneta · Air Bank · KB</p>
+            <p class="header-ver">v5.0 · ČS · ČSOB · RB · Fio · Moneta · Air Bank · KB</p>
         </div>
     </div>
     """, unsafe_allow_html=True)
