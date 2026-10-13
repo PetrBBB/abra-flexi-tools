@@ -45,6 +45,15 @@ def extract_text_from_pdf_bytes(pdf_bytes: bytes) -> str:
 
 
 def detect_bank(text: str) -> str:
+    # Nejdřív hlavička (první strana) - názvy bank se jinak mohou objevit
+    # v popisu transakce (např. obchodník "CSOB 4203 ZDAR N.SAZ").
+    head = _detect_bank_in(text[:1500])
+    if head != "Neznámá":
+        return head
+    return _detect_bank_in(text)
+
+
+def _detect_bank_in(text: str) -> str:
     upper = text.upper()
     if "ČESKOSLOVENSKÁ OBCHODNÍ BANKA" in upper or "CSOB" in upper or "ČSOB" in upper:
         return "ČSOB"
@@ -304,7 +313,12 @@ def sestavit_popis(
         parts.append(f"ID {ident}")
     # 6. Typ transakce — na konec
     if typ and typ.strip():
-        parts.append(typ.strip())
+        t = typ.strip()
+        # RB uvádí typ ve dvou sloupcích ("Platba kartou Platba kartou") - sloučit
+        h = len(t) // 2
+        if len(t) % 2 == 1 and t[:h] == t[h + 1:] and t[h] == " ":
+            t = t[:h]
+        parts.append(t)
     return truncate_text(" | ".join([p for p in parts if p]), MAX_POPIS)
 
 # Fráze které se mohou vyskytnout v detailech ČSOB ale nejsou součástí transakce
@@ -2124,7 +2138,7 @@ def main():
         </div>
         <div>
             <p class="header-app">PDF výpis → ABRA Flexi</p>
-            <p class="header-ver">v5.0 · ČS · ČSOB · RB · Fio · Moneta · Air Bank · KB</p>
+            <p class="header-ver">v5.1 · ČS · ČSOB · RB · Fio · Moneta · Air Bank · KB</p>
         </div>
     </div>
     """, unsafe_allow_html=True)
