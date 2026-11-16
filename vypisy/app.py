@@ -1476,7 +1476,9 @@ def parse_csob_vp_block(block: List[str], poradi: int, rok: str, mesic: str, typ
 
 # Moneta: regex pro datum a pro částku (parsujeme token po tokenu)
 _MONETA_DATUM_RE = re.compile(r"^(\d{2}\.\d{2}\.\d{4})\s+(.*)")
-_MONETA_CASTKA_RE = re.compile(r"(?<!\d)(-?\s*\d{1,3}(?:\s\d{3})*,\d{2})$")
+# (?<![\dA-Za-z]) — částka nesmí začínat poslední číslicí kódu transakce
+# (např. "260421RD2S0HJCAE4 239 765,00" není 4 239 765,00)
+_MONETA_CASTKA_RE = re.compile(r"(?<![\dA-Za-z])(-?\s*\d{1,3}(?:\s\d{3})*,\d{2})$")
 _MONETA_UCET_RE = re.compile(r"^(\d{1,6}-\d{1,10}/\d{4}|\d{1,16}/\d{4})\s+(.*)")
 _MONETA_KOD_TRANS_RE = re.compile(r"^[A-Z0-9]{15,}$")  # kód transakce: 15+ alfanum
 
@@ -1652,11 +1654,12 @@ def parse_moneta_block(block: List[str], poradi: int, rok: str, mesic: str, typ_
         if line.startswith("KI:") or line.startswith("AV:"):
             continue
         # Popis / název protiúčtu — odstraníme datum na konci
-        m3 = re.match(r"^(.+?)\s+\d{2}\.\d{2}\.\d{4}(\s+\d{4})?$", line)
+        m3 = re.match(r"^(.+?)\s+\d{2}\.\d{2}\.\d{4}(\s+\d{1,10})?$", line)
         if m3:
             clean = m3.group(1).strip()
-            if m3.group(2) and not ks:
-                ks = m3.group(2).strip()
+            ks_val = (m3.group(2) or "").strip()
+            if ks_val and int(ks_val) != 0 and not ks:  # "0" / "0000000000" = bez KS
+                ks = ks_val.lstrip("0") if len(ks_val) > 4 else ks_val
             if not popis_typ:
                 popis_typ = clean
             else:
@@ -2261,7 +2264,7 @@ def main():
         </div>
         <div>
             <p class="header-app">PDF výpis → ABRA Flexi</p>
-            <p class="header-ver">v6.2 · ČS · ČSOB · RB · Fio · Moneta · Air Bank · KB</p>
+            <p class="header-ver">v6.3 · ČS · ČSOB · RB · Fio · Moneta · Air Bank · KB</p>
         </div>
     </div>
     """, unsafe_allow_html=True)
