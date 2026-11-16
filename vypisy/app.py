@@ -1979,10 +1979,15 @@ def parse_transactions(text: str, banka: str, meta: Dict[str, str], typ_dokladu:
                     skipped += 1
         else:
             blocks = split_csob_transaction_blocks(lines)
+            castka_zustatek = re.compile(r"-?\d{1,3}(?: \d{3})*,\d{2}\s+-?\d{1,3}(?: \d{3})*,\d{2}$")
             for i, block in enumerate(blocks, start=1):
                 row = parse_csob_block(block, i, meta["rok"], meta["mesic"], typ_dokladu, bankovni_ucet, ucet_id)
                 if row:
                     rows.append(row)
+                elif not any(castka_zustatek.search(x) for x in block):
+                    # Informační záznam bez částky a zůstatku (např. "Změna úrokové sazby")
+                    # — není to pohyb na účtu, nepočítáme ho jako chybu.
+                    continue
                 else:
                     skipped += 1
     elif banka == "Raiffeisenbank":
@@ -2256,7 +2261,7 @@ def main():
         </div>
         <div>
             <p class="header-app">PDF výpis → ABRA Flexi</p>
-            <p class="header-ver">v6.1 · ČS · ČSOB · RB · Fio · Moneta · Air Bank · KB</p>
+            <p class="header-ver">v6.2 · ČS · ČSOB · RB · Fio · Moneta · Air Bank · KB</p>
         </div>
     </div>
     """, unsafe_allow_html=True)
