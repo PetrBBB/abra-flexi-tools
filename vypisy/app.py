@@ -233,6 +233,13 @@ def split_csob_transaction_blocks(lines: List[str]) -> List[List[str]]:
         line = line.rstrip()
         if not line:
             continue
+        if any(ph in line for ph in _CSOB_END_PHRASES):
+            # Začátek textu banky (dopis, upozornění) — uzavřít transakci
+            # a nic dalšího k ní nepřidávat (ani pokračovací řádky textu).
+            if current:
+                blocks.append(current)
+            current = []
+            continue
         if any(x in line for x in skip_contains):
             continue
         if is_csob_junk_line(line):
@@ -338,6 +345,35 @@ def clean_detail_line(line: str) -> str:
     return normalize_spaces(line).replace(";", ",")
 
 
+# Fráze, kterými začíná závěrečný text výpisu (dopis klientovi, upozornění).
+# Od nich dál už nic nepatří k transakci, ani pokračovací řádky bez klíčových slov.
+_CSOB_END_PHRASES = (
+    "Prosíme Vás o včasné", "Vážená klientko", "Vážený kliente",
+    "Pokud při zúčtování karetní", "Vklad na tomto účtu podléhá", "Víte, že si u nás",
+)
+
+# Typy transakcí ČSOB (delší varianty dřív) — co za nimi následuje velkým
+# písmenem, je název protiúčtu (např. "Příchozí úhrada okamžitá Naevia Estate s.r.o.")
+_CSOB_TYPY = (
+    "Příchozí úhrada okamžitá SEPA", "Odchozí úhrada okamžitá SEPA",
+    "Příchozí úhrada okamžitá", "Odchozí úhrada okamžitá",
+    "Příchozí úhrada SEPA", "Odchozí úhrada SEPA",
+    "Příchozí úhrada", "Odchozí úhrada",
+    "Transakce platební kartou", "Inkaso", "SIPO",
+)
+
+
+def rozdel_csob_typ_nazev(popis1: str) -> Tuple[str, str]:
+    for t in _CSOB_TYPY:
+        if popis1.startswith(t + " "):
+            zbytek = popis1[len(t):].strip()
+            if zbytek and (zbytek[0].isupper() or zbytek[0].isdigit()) and not zbytek.isupper() or (
+                    zbytek and len(zbytek) > 4 and zbytek.isupper()):
+                return t, zbytek
+            break
+    return popis1, ""
+
+
 def is_csob_junk_line(line: str) -> bool:
     """Vrátí True pokud řádek obsahuje marketingový nebo systémový text ČSOB."""
     return any(phrase in line for phrase in _CSOB_SKIP_PHRASES)
@@ -353,7 +389,12 @@ def parse_csob_block(block: List[str], poradi: int, rok: str, mesic: str, typ_do
     typ_pohybu = "typPohybu.prijem" if castka > 0 else "typPohybu.vydej"
     castka_abs = abs(castka)
     ident = first["ident"]
-    lines = [clean_detail_line(x) for x in block[1:]
+    telo = []
+    for x in block[1:]:
+        if any(ph in x for ph in _CSOB_END_PHRASES):
+            break  # konec výpisu — zbytek je text banky, ne transakce
+        telo.append(x)
+    lines = [clean_detail_line(x) for x in telo
              if clean_detail_line(x) and not is_csob_junk_line(x)]
     ucet_proti = ""
     vs = ""
@@ -376,8 +417,10 @@ def parse_csob_block(block: List[str], poradi: int, rok: str, mesic: str, typ_do
         if re.search(r"XXXXXXXXXXXX|\d{4}\s+\d{4}\s+\d{4}", d):
             continue
         clean_details.append(d)
+    typ_txt, nazev_txt = rozdel_csob_typ_nazev(normalize_spaces(first["popis1"]).replace(";", ","))
     popis = sestavit_popis(
-        typ=normalize_spaces(first["popis1"]).replace(";", ","),
+        typ=typ_txt,
+        nazev=nazev_txt,
         detaily=clean_details[:3],
         ucet_proti=ucet_proti,
         ident=ident,
@@ -2213,7 +2256,7 @@ def main():
         </div>
         <div>
             <p class="header-app">PDF výpis → ABRA Flexi</p>
-            <p class="header-ver">v6.0 · ČS · ČSOB · RB · Fio · Moneta · Air Bank · KB</p>
+            <p class="header-ver">v6.1 · ČS · ČSOB · RB · Fio · Moneta · Air Bank · KB</p>
         </div>
     </div>
     """, unsafe_allow_html=True)
