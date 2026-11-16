@@ -2050,6 +2050,81 @@ def rows_to_csv_bytes(rows: List[Dict[str, str]]) -> bytes:
     return ("\ufeff" + output.getvalue()).encode("utf-8")
 
 
+def zpracuj_pdf(nazev_souboru: str, pdf_bytes: bytes, typ_dokladu: str, bankovni_ucet: str) -> Dict:
+    """Zpracuje jeden PDF výpis. Nikdy nevyhazuje výjimku - chybu vrátí v poli 'chyba'."""
+    vysl = {"soubor": nazev_souboru, "banka": "", "meta": {}, "rows": [], "skipped": 0, "chyba": ""}
+    try:
+        text = extract_text_from_pdf_bytes(pdf_bytes)
+        banka = detect_bank(text)
+        vysl["banka"] = banka
+        if banka == "Neznámá":
+            vysl["chyba"] = "Nepodporovaná banka"
+            return vysl
+        meta = extract_statement_meta(text, banka)
+        vysl["meta"] = meta
+        if not meta.get("rok") or not meta.get("mesic"):
+            vysl["chyba"] = "Nepodařilo se zjistit rok nebo měsíc"
+            return vysl
+        rows, skipped = parse_transactions(text, banka, meta, typ_dokladu, bankovni_ucet)
+        vysl["rows"], vysl["skipped"] = rows, skipped
+        if not rows:
+            vysl["chyba"] = "Nepodařilo se zpracovat žádné položky"
+    except Exception as e:  # jeden vadný soubor nesmí shodit celou dávku
+        vysl["chyba"] = f"Chyba při zpracování: {e}"
+    return vysl
+
+
+def _cislo_uctu_klic(meta: Dict) -> str:
+    """Normalizované číslo účtu z PDF (bez mezer, měny) pro porovnání výpisů."""
+    u = (meta.get("ucet_pdf") or "").upper()
+    m = re.search(r"[\d-]{4,}\s*/\s*\d{4}", u)
+    if m:
+        return re.sub(r"\s", "", m.group(0)).lstrip("0")
+    return re.sub(r"\s", "", u)
+
+
+def poradi_klic(v: Dict) -> Tuple:
+    """Chronologické řazení: účet, rok, měsíc, číslo výpisu, nejstarší datum pohybu."""
+    meta = v.get("meta", {})
+    try:
+        rok = int(meta.get("rok") or 0)
+    except ValueError:
+        rok = 0
+    try:
+        mesic = int(meta.get("mesic") or 0)
+    except ValueError:
+        mesic = 0
+    try:
+        cislo = int(meta.get("cislo_vypisu") or 0)
+    except ValueError:
+        cislo = 0
+    datumy = [r.get("Vystaveno", "") for r in v.get("rows", []) if r.get("Vystaveno")]
+    nejstarsi = min(datumy) if datumy else ""
+    return (v.get("banka", ""), _cislo_uctu_klic(meta), rok, mesic, cislo, nejstarsi, v.get("soubor", ""))
+
+
+def _fmt_kc(x: float) -> str:
+    return f"{x:,.2f}".replace(",", " ")
+
+
+def _soucty(rows: List[Dict]) -> Tuple[float, float]:
+    pr = sum(float(r["Částka osvob. bez DPH [Kč]"]) for r in rows if r["Typ pohybu"] == "typPohybu.prijem")
+    vy = sum(float(r["Částka osvob. bez DPH [Kč]"]) for r in rows if r["Typ pohybu"] == "typPohybu.vydej")
+    return pr, vy
+
+
+def _slug(t: str) -> str:
+    tab = str.maketrans("čšřáíéůúžýťďňěČŠŘÁÍÉŮÚŽÝŤĎŇĚ ", "csraieuuzytdneCSRAIEUUZYTDNE_")
+    return re.sub(r"[^A-Za-z0-9_-]", "", t.translate(tab)).lower()
+
+
+def _obdobi(meta: Dict) -> str:
+    o = f"{meta.get('mesic', '?')}/{meta.get('rok', '?')}"
+    if meta.get("cislo_vypisu"):
+        o += f" (výpis č. {int(meta['cislo_vypisu'])})"
+    return o
+
+
 def main():
     st.set_page_config(page_title="PDF výpis → ABRA Flexi", page_icon="🏦", layout="centered")
 
@@ -2138,7 +2213,7 @@ def main():
         </div>
         <div>
             <p class="header-app">PDF výpis → ABRA Flexi</p>
-            <p class="header-ver">v5.1 · ČS · ČSOB · RB · Fio · Moneta · Air Bank · KB</p>
+            <p class="header-ver">v6.0 · ČS · ČSOB · RB · Fio · Moneta · Air Bank · KB</p>
         </div>
     </div>
     """, unsafe_allow_html=True)
@@ -2182,56 +2257,123 @@ def main():
     st.markdown("<br>", unsafe_allow_html=True)
 
     # ---- Krok 2: Nahrání PDF ----
-    st.markdown('<p class="step-label">Krok 2 — Nahrání PDF výpisu</p>', unsafe_allow_html=True)
+    st.markdown('<p class="step-label">Krok 2 — Nahrání PDF výpisů</p>', unsafe_allow_html=True)
 
     typ_dokladu = TYP_DOKLADU_DEFAULT
 
-    uploaded_file = st.file_uploader(
-        "Přetáhněte PDF výpis nebo klikněte pro výběr",
+    uploaded_files = st.file_uploader(
+        "Přetáhněte jeden nebo více PDF výpisů (např. celý rok najednou)",
         type=["pdf"],
+        accept_multiple_files=True,
         label_visibility="visible",
     )
 
-    if not uploaded_file:
-        st.markdown('<div class="locked-box">⬆ Nahrajte PDF výpis pro pokračování</div>', unsafe_allow_html=True)
+    if not uploaded_files:
+        st.markdown('<div class="locked-box">⬆ Nahrajte PDF výpis(y) pro pokračování</div>', unsafe_allow_html=True)
         st.stop()
 
-    # ---- Zpracování ----
-    pdf_bytes = uploaded_file.read()
-    text = extract_text_from_pdf_bytes(pdf_bytes)
-    banka = detect_bank(text)
-    meta = extract_statement_meta(text, banka)
+    # ---- Zpracování všech souborů ----
+    vysledky = []
+    progress = st.progress(0.0, text="Zpracovávám výpisy…") if len(uploaded_files) > 1 else None
+    for i, uf in enumerate(uploaded_files, start=1):
+        vysledky.append(zpracuj_pdf(uf.name, uf.getvalue(), typ_dokladu, ucet_potvrzen))
+        if progress:
+            progress.progress(i / len(uploaded_files), text=f"Zpracovávám výpisy… {i}/{len(uploaded_files)}")
+    if progress:
+        progress.empty()
 
-    if banka == "Neznámá":
-        st.error("Nepodporovaná banka. Tato verze podporuje ČS, ČSOB, Raiffeisenbank, Fio, Moneta, Air Bank a Komerční banku.")
-        st.stop()
+    ok = [v for v in vysledky if not v["chyba"]]
+    chybne = [v for v in vysledky if v["chyba"]]
 
-    if not meta.get("rok") or not meta.get("mesic"):
-        st.error("Nepodařilo se zjistit rok nebo měsíc z PDF.")
-        st.stop()
+    # Seřadit chronologicky bez ohledu na pořadí nahrání
+    ok.sort(key=poradi_klic)
 
-    rows, skipped = parse_transactions(text, banka, meta, typ_dokladu, ucet_potvrzen)
-
-    if not rows:
-        st.error("Nepodařilo se zpracovat žádné položky. Zkontrolujte formát výpisu.")
-        st.stop()
+    # Duplicitní výpisy (stejný soubor nahraný 2×) — podle interních čísel
+    videna_cisla = set()
+    duplicitni = []
+    unikatni = []
+    for v in ok:
+        cisla = {r["Interní číslo"] for r in v["rows"]}
+        if cisla & videna_cisla:
+            duplicitni.append(v)
+        else:
+            videna_cisla |= cisla
+            unikatni.append(v)
+    ok = unikatni
 
     st.markdown("<br>", unsafe_allow_html=True)
 
     # ---- Krok 3: Výsledek ----
     st.markdown('<p class="step-label">Krok 3 — Výsledek a stažení</p>', unsafe_allow_html=True)
 
-    df = pd.DataFrame(rows)
-    prijmy = df.loc[df["Typ pohybu"] == "typPohybu.prijem", "Částka osvob. bez DPH [Kč]"].astype(float).sum()
-    vydaje = df.loc[df["Typ pohybu"] == "typPohybu.vydej", "Částka osvob. bez DPH [Kč]"].astype(float).sum()
+    for v in chybne:
+        st.error(f"❌ **{v['soubor']}** — {v['chyba']}. Tento soubor nebude v CSV.")
+    for v in duplicitni:
+        st.warning(f"⚠️ **{v['soubor']}** — stejný výpis už je v dávce (duplicita), přeskakuji.")
 
-    prijmy_fmt = f"{prijmy:,.2f}".replace(",", " ")
-    vydaje_fmt = f"{vydaje:,.2f}".replace(",", " ")
+    if not ok:
+        st.stop()
+
+    # Kontroly dávky
+    ucty = {(v["banka"], _cislo_uctu_klic(v["meta"])) for v in ok}
+    if len(ucty) > 1:
+        st.warning(
+            "⚠️ **Výpisy jsou z více různých účtů.** Všem položkám se přiřadí stejná zkratka "
+            f"Bank.účet **{ucet_potvrzen}**. Pokud mají jít na různé účty ve Flexi, "
+            "nahrajte každý účet zvlášť (nebo použijte CSV jednotlivých výpisů níže)."
+        )
+    meny = {r.get("Měna", "CZK") for v in ok for r in v["rows"]}
+    if len(meny) > 1:
+        st.warning(f"⚠️ Dávka obsahuje více měn ({', '.join(sorted(meny))}). Doporučuji importovat každou měnu zvlášť.")
+
+    # Mezery v řadě měsíců u jednoho účtu
+    if len(ucty) == 1 and len(ok) > 1:
+        mesice = sorted({(int(v["meta"]["rok"]), int(v["meta"]["mesic"])) for v in ok})
+        chybi = []
+        for (r1, m1), (r2, m2) in zip(mesice, mesice[1:]):
+            r, m = r1, m1 + 1
+            while (r, m) < (r2, m2):
+                if m > 12:
+                    r, m = r + 1, 1
+                    continue
+                chybi.append(f"{m:02d}/{r}")
+                m += 1
+        if chybi:
+            st.info(f"ℹ️ V řadě výpisů chybí měsíc(e): {', '.join(chybi)}. Pokud to tak má být, ignorujte.")
+
+    # Přehled výpisů v pořadí, jak půjdou do CSV
+    if len(ok) > 1:
+        prehled = []
+        for poradi, v in enumerate(ok, start=1):
+            pr, vy = _soucty(v["rows"])
+            prehled.append({
+                "#": poradi,
+                "Soubor": v["soubor"],
+                "Banka": v["banka"],
+                "Účet": v["meta"].get("ucet_pdf", ""),
+                "Období": _obdobi(v["meta"]),
+                "Položek": len(v["rows"]),
+                "Příjmy": _fmt_kc(pr),
+                "Výdaje": _fmt_kc(vy),
+                "Nezprac. bloků": v["skipped"] or "",
+            })
+        st.markdown("**Pořadí výpisů** (seřazeno chronologicky, nezáleží na pořadí nahrání):")
+        st.dataframe(pd.DataFrame(prehled), use_container_width=True, hide_index=True)
+
+    rows = [r for v in ok for r in v["rows"]]
+    skipped = sum(v["skipped"] for v in ok)
+    df = pd.DataFrame(rows)
+    prijmy, vydaje = _soucty(rows)
+    banky = sorted({v["banka"] for v in ok})
+    banka_txt = ", ".join(banky)
+    pocet_txt = f"{len(ok)} výpis" + ("y" if 2 <= len(ok) <= 4 else ("ů" if len(ok) >= 5 else ""))
+
     st.markdown(f"""
     <div style="display:grid; grid-template-columns: repeat(4,1fr); gap:10px; margin-bottom:1rem;">
         <div style="background:#f7f8fa; border-radius:8px; padding:0.75rem 1rem;">
             <div style="font-size:12px; color:#6b7a8d; margin-bottom:4px;">Banka</div>
-            <div style="font-size:15px; font-weight:600; color:#1a3a5c;">{banka}</div>
+            <div style="font-size:15px; font-weight:600; color:#1a3a5c;">{banka_txt}</div>
+            <div style="font-size:12px; color:#6b7a8d; margin-top:2px;">{pocet_txt}</div>
         </div>
         <div style="background:#f7f8fa; border-radius:8px; padding:0.75rem 1rem;">
             <div style="font-size:12px; color:#6b7a8d; margin-bottom:4px;">Položek</div>
@@ -2239,11 +2381,11 @@ def main():
         </div>
         <div style="background:#f0f7f0; border-radius:8px; padding:0.75rem 1rem;">
             <div style="font-size:12px; color:#6b7a8d; margin-bottom:4px;">Příjmy [Kč]</div>
-            <div style="font-size:15px; font-weight:600; color:#1a6e35; word-break:break-all;">{prijmy_fmt}</div>
+            <div style="font-size:15px; font-weight:600; color:#1a6e35; word-break:break-all;">{_fmt_kc(prijmy)}</div>
         </div>
         <div style="background:#fff4f4; border-radius:8px; padding:0.75rem 1rem;">
             <div style="font-size:12px; color:#6b7a8d; margin-bottom:4px;">Výdaje [Kč]</div>
-            <div style="font-size:15px; font-weight:600; color:#a01e1e; word-break:break-all;">{vydaje_fmt}</div>
+            <div style="font-size:15px; font-weight:600; color:#a01e1e; word-break:break-all;">{_fmt_kc(vydaje)}</div>
         </div>
     </div>
     """, unsafe_allow_html=True)
@@ -2253,20 +2395,37 @@ def main():
 
     st.dataframe(df, use_container_width=True, hide_index=True)
 
-    bank_slug = (banka.lower()
-                 .replace("č", "c").replace("š", "s").replace("ř", "r")
-                 .replace("á", "a").replace("í", "i").replace("é", "e")
-                 .replace("ů", "u").replace("ú", "u").replace(" ", "_"))
-    csv_bytes = rows_to_csv_bytes(rows)
-    filename = f"flexi_banka_import_{bank_slug}_{meta['rok']}_{meta['mesic']}.csv"
+    prvni, posledni = ok[0]["meta"], ok[-1]["meta"]
+    bank_slug = _slug(banky[0]) if len(banky) == 1 else "vice_bank"
+    if len(ok) == 1:
+        filename = f"flexi_banka_import_{bank_slug}_{prvni['rok']}_{prvni['mesic']}.csv"
+    else:
+        filename = (f"flexi_banka_import_{bank_slug}_{prvni['rok']}_{prvni['mesic']}"
+                    f"-{posledni['rok']}_{posledni['mesic']}.csv")
 
     st.download_button(
-        "⬇  Stáhnout CSV pro ABRA Flexi",
-        csv_bytes,
+        "⬇  Stáhnout CSV pro ABRA Flexi" + (f" (všech {len(ok)} výpisů v jednom)" if len(ok) > 1 else ""),
+        rows_to_csv_bytes(rows),
         filename,
         "text/csv",
         use_container_width=True,
     )
+
+    if len(ok) > 1:
+        with st.expander("CSV jednotlivých výpisů zvlášť"):
+            for poradi, v in enumerate(ok, start=1):
+                m = v["meta"]
+                fn = f"flexi_banka_import_{_slug(v['banka'])}_{m['rok']}_{m['mesic']}"
+                if m.get("cislo_vypisu"):
+                    fn += f"_c{int(m['cislo_vypisu'])}"
+                st.download_button(
+                    f"{poradi}. {_obdobi(m)} — {v['soubor']}",
+                    rows_to_csv_bytes(v["rows"]),
+                    fn + ".csv",
+                    "text/csv",
+                    key=f"dl_{poradi}_{v['soubor']}",
+                    use_container_width=True,
+                )
 
     with st.expander("Jak importovat do ABRA Flexi"):
         st.markdown("""
