@@ -2264,7 +2264,7 @@ def main():
         </div>
         <div>
             <p class="header-app">PDF výpis → ABRA Flexi</p>
-            <p class="header-ver">v6.3 · ČS · ČSOB · RB · Fio · Moneta · Air Bank · KB</p>
+            <p class="header-ver">v6.4 · ČS · ČSOB · RB · Fio · Moneta · Air Bank · KB</p>
         </div>
     </div>
     """, unsafe_allow_html=True)
@@ -2312,11 +2312,26 @@ def main():
 
     typ_dokladu = TYP_DOKLADU_DEFAULT
 
+    # Uploader má proměnný klíč — změnou klíče se vymažou všechny nahrané soubory
+    if "uploader_klic" not in st.session_state:
+        st.session_state["uploader_klic"] = 0
+
+    def _vymazat_vypisy():
+        st.session_state["uploader_klic"] += 1
+
+    col_lbl, col_reset = st.columns([3, 1])
+    with col_lbl:
+        st.markdown("Přetáhněte jeden nebo více PDF výpisů (např. celý rok najednou)")
+    with col_reset:
+        st.button("🗑  Vymazat výpisy", on_click=_vymazat_vypisy, use_container_width=True,
+                  help="Odebere všechny nahrané PDF — např. před zpracováním dalšího klienta")
+
     uploaded_files = st.file_uploader(
         "Přetáhněte jeden nebo více PDF výpisů (např. celý rok najednou)",
         type=["pdf"],
         accept_multiple_files=True,
-        label_visibility="visible",
+        label_visibility="collapsed",
+        key=f"uploader_{st.session_state['uploader_klic']}",
     )
 
     if not uploaded_files:
